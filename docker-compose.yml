@@ -1,0 +1,49 @@
+services:
+  server:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: werwolf-server
+    ports:
+      - "8080:8080"
+    restart: always
+    environment:
+      MYSQL_DATABASE: werwolf
+      MYSQL_USER: werwolfuser
+      MYSQL_PASSWORD: werwolfpass
+      MYSQL_HOSTNAME: db
+    depends_on:
+      - db
+    volumes:
+      - ./frontend:/app/frontend
+
+  db:
+    image: mariadb:latest
+    container_name: werwolf-db
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: werwolf
+      MYSQL_USER: werwolfuser
+      MYSQL_PASSWORD: werwolfpass
+    volumes:
+      - db_data:/var/lib/mysql
+      - ./backend/db-init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "3307:3306"
+
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    container_name: werwolf-phpmyadmin
+    restart: always
+    ports:
+      - "8085:80"
+    environment:
+      PMA_HOST: db
+      PMA_USER: werwolfuser
+      PMA_PASSWORD: werwolfpass
+    depends_on:
+      - db
+
+volumes:
+  db_data:
