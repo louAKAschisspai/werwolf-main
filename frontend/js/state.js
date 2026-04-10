@@ -13,5 +13,6 @@ const gameState = {
     killedInNight: null,
     votingResult: null,
     isFirstDay: true,
-    afterNight: false
+    afterNight: false,
+    announcement: ""
 };

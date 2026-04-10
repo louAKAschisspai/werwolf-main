@@ -5,17 +5,24 @@
     <title>Werwolf</title>
     <link rel="stylesheet" href="css/style.css">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
 </head>
 <body>
 
 <h1>Werwolf (Prototyp)</h1>
 
+<div id="joinRoom" style="display: block;">
+    <h2>Raum beitreten</h2>
+    <div>
+        <input type="text" id="roomId" placeholder="Raum-ID eingeben (z.B. room1)">
+        <input type="text" id="playerName" placeholder="Dein Name">
+        <button id="joinRoomBtn">Raum beitreten</button>
+    </div>
+</div>
+
 <div id="lobby" style="display: none;">
     <h2>Lobby</h2>
-    <div>
-        <input type="text" id="playerName" placeholder="Spielername eingeben">
-        <button id="addPlayer">Spieler hinzufügen</button>
-    </div>
+    <p id="roomInfo"></p>
     <div>
         <label>Anzahl Werwölfe: <input type="number" id="numWerewolves" min="1" value="1"></label>
     </div>
@@ -39,6 +46,7 @@
 </div>
 
 <script src="js/state.js"></script>
+<script src="js/socket.js"></script>
 <script src="js/game.js"></script>
 <script src="js/ui.js"></script>
 
