@@ -1,50 +1,231 @@
 <!DOCTYPE html>
-<html lang="de">
+<html lang="de" data-bs-theme="dark">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Werwolf</title>
-    <link rel="stylesheet" href="css/style.css">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="css/style.css">
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
 </head>
 <body>
 
-<h1>Werwolf (Prototyp)</h1>
+<!-- Header -->
+<header class="app-header text-center py-3">
+    <h1 class="display-5 fw-bold mb-0">
+        <span class="moon-icon">🌕</span> Werwolf
+    </h1>
+</header>
 
-<div id="joinRoom" style="display: block;">
-    <h2>Raum beitreten</h2>
-    <div>
-        <input type="text" id="roomId" placeholder="Raum-ID eingeben (z.B. room1)">
-        <input type="text" id="playerName" placeholder="Dein Name">
-        <button id="joinRoomBtn">Raum beitreten</button>
+<!-- ===================== JOIN ROOM ===================== -->
+<div id="joinRoom" class="container mt-5" style="display: block;">
+    <div class="row justify-content-center">
+        <div class="col-12 col-sm-8 col-md-6 col-lg-4">
+            <div class="card shadow-lg">
+                <div class="card-body p-4">
+                    <h2 class="card-title text-center mb-4">
+                        <i class="bi bi-door-open"></i> Raum beitreten
+                    </h2>
+                    <div class="mb-3">
+                        <label for="roomId" class="form-label">Raum-ID</label>
+                        <input type="text" class="form-control" id="roomId"
+                               placeholder="z.B. room1" autocomplete="off">
+                    </div>
+                    <div class="mb-4">
+                        <label for="playerName" class="form-label">Dein Name</label>
+                        <input type="text" class="form-control" id="playerName"
+                               placeholder="Dein Name" autocomplete="off">
+                    </div>
+                    <button id="joinRoomBtn" class="btn btn-primary w-100 btn-lg">
+                        <i class="bi bi-box-arrow-in-right"></i> Beitreten
+                    </button>
+                </div>
+            </div>
+        </div>
     </div>
 </div>
 
-<div id="lobby" style="display: none;">
-    <h2>Lobby</h2>
-    <p id="roomInfo"></p>
-    <div>
-        <label>Anzahl Werwölfe: <input type="number" id="numWerewolves" min="1" value="1"></label>
+<!-- ===================== LOBBY ===================== -->
+<div id="lobby" class="container mt-4" style="display: none;">
+    <div class="row justify-content-center">
+        <div class="col-12 col-md-8 col-lg-6">
+
+            <div class="card shadow mb-3">
+                <div class="card-body">
+                    <h2 class="card-title mb-1">
+                        <i class="bi bi-people-fill"></i> Lobby
+                    </h2>
+                    <p class="text-muted mb-0" id="roomInfo"></p>
+                </div>
+            </div>
+
+            <div class="card shadow mb-3">
+                <div class="card-header">
+                    <i class="bi bi-person-lines-fill"></i> Spieler im Raum
+                </div>
+                <div class="card-body">
+                    <div id="playerList"></div>
+                </div>
+            </div>
+
+            <!-- Nur für den Leiter: Spieleinstellungen -->
+            <div id="leaderSettingsCard" class="card shadow mb-3">
+                <div class="card-header fw-semibold">
+                    <i class="bi bi-sliders"></i> Spieleinstellungen
+                </div>
+                <div class="card-body">
+                    <label for="numWerewolves" class="form-label fw-semibold mb-1">
+                        <i class="bi bi-moon-stars-fill text-warning"></i> Anzahl Werwölfe
+                    </label>
+                    <input type="number" class="form-control mb-3" id="numWerewolves" min="1" value="1">
+
+                    <p class="fw-semibold mb-2">
+                        <i class="bi bi-stars text-info"></i> Sonderrollen
+                    </p>
+                    <div class="form-check mb-2">
+                        <input class="form-check-input" type="checkbox" id="roleWitch">
+                        <label class="form-check-label" for="roleWitch">
+                            🧙 Hexe &mdash; hat Heil- &amp; Gifttrank (je einmal pro Spiel)
+                        </label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="roleSeer">
+                        <label class="form-check-label" for="roleSeer">
+                            🔮 Seherin &mdash; kann jede Nacht eine Rolle aufdecken
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Für alle anderen: Einstellungen nur lesen -->
+            <div id="settingsReadOnly" class="card shadow mb-3 d-none">
+                <div class="card-body">
+                    <div class="d-flex align-items-center gap-2 mb-2">
+                        <i class="bi bi-moon-stars-fill text-warning"></i>
+                        <span class="text-muted">Werwölfe:</span>
+                        <strong id="werewolfCountDisplay">1</strong>
+                    </div>
+                    <div id="activeRolesDisplay" class="text-muted small"></div>
+                </div>
+            </div>
+
+            <button id="startGame" class="btn btn-danger w-100 btn-lg">
+                <i class="bi bi-play-fill"></i> Spiel starten
+            </button>
+
+            <p id="lobbyLeaderHint" class="text-muted text-center mt-3 small d-none">
+                <i class="bi bi-hourglass-split me-1"></i>Warte auf den Leiter 👑, das Spiel zu starten...
+            </p>
+
+            <hr class="border-secondary mt-4">
+            <button id="leaveLobbyBtn" class="btn btn-outline-secondary w-100">
+                <i class="bi bi-box-arrow-left me-1"></i> Lobby verlassen
+            </button>
+
+        </div>
     </div>
-    <div id="playerList"></div>
-    <button id="startGame">Spiel starten</button>
 </div>
 
-<div id="game" style="display: none;">
-    <div id="phase"></div>
-    <div id="round"></div>
-    <div id="currentVoter"></div>
-    <div id="announcement"></div>
+<!-- ===================== END SCREEN ===================== -->
+<div id="endScreen" class="container mt-5" style="display: none;">
+    <div class="row justify-content-center">
+        <div class="col-12 col-sm-8 col-md-6 col-lg-5">
+            <div class="card shadow-lg text-center end-card">
+                <div class="card-body p-5">
+                    <div id="endIcon" class="end-icon mb-3"></div>
+                    <h2 id="endTitle" class="fw-bold mb-2"></h2>
+                    <div id="endRoleReveal" class="mb-4"></div>
 
-    <h2>Spieler</h2>
-    <div id="players"></div>
+                    <button id="btnStayInLobby" class="btn btn-primary btn-lg w-100 mb-3">
+                        <i class="bi bi-people-fill me-2"></i>In der Lobby bleiben
+                    </button>
 
-    <h2>Aktionen</h2>
-    <div id="actions"></div>
-
-    <button id="nextPhase">Nächste Phase</button>
+                    <button id="btnLeaveRoom" class="btn btn-outline-secondary btn-lg w-100">
+                        <i class="bi bi-box-arrow-left me-2"></i>Zurück zum Startbildschirm
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
 </div>
 
+<!-- ===================== GAME ===================== -->
+<div id="game" class="container mt-3 pb-4" style="display: none;">
+    <div class="row justify-content-center">
+        <div class="col-12 col-md-10 col-lg-8">
+
+            <!-- Status-Zeile -->
+            <div class="d-flex gap-2 mb-3 flex-wrap">
+                <span id="phase" class="badge fs-6 phase-badge px-3 py-2"></span>
+                <span id="round" class="badge bg-secondary fs-6 px-3 py-2"></span>
+            </div>
+
+            <!-- Ankündigung -->
+            <div id="announcementBox" class="alert alert-warning d-none mb-3" role="alert">
+                <i class="bi bi-megaphone-fill me-2"></i>
+                <span id="announcement"></span>
+            </div>
+
+            <!-- Aktueller Voter -->
+            <div id="currentVoterBox" class="alert alert-info d-none mb-3" role="alert">
+                <span id="currentVoter"></span>
+            </div>
+
+            <!-- Spieler -->
+            <div class="card shadow mb-3">
+                <div class="card-header fw-semibold">
+                    <i class="bi bi-people-fill"></i> Spieler
+                </div>
+                <div class="card-body p-2">
+                    <div id="players" class="row g-2"></div>
+                </div>
+            </div>
+
+            <!-- Aktionen -->
+            <div class="card shadow mb-3">
+                <div class="card-header fw-semibold">
+                    <i class="bi bi-hand-index-fill"></i> Aktionen
+                </div>
+                <div class="card-body" id="actions"></div>
+            </div>
+
+            <!-- Werwolf-Chat (nur Nacht, nur für Werwölfe) -->
+            <div id="werewolfChatSection" class="card shadow mb-3 d-none wolf-chat-card">
+                <div class="card-header fw-semibold wolf-chat-header">
+                    <i class="bi bi-chat-dots-fill"></i> 🐺 Geheimer Werwolf-Chat
+                </div>
+                <div id="werewolfChatMessages" class="chat-messages p-3"></div>
+                <div id="werewolfQuickBtns" class="px-3 pb-2 d-flex flex-wrap gap-1"></div>
+                <div class="chat-input-row p-2 border-top d-flex gap-2">
+                    <input type="text" id="werewolfChatInput" class="form-control"
+                           placeholder="Nachricht an Werwölfe..." maxlength="300" autocomplete="off">
+                    <button id="werewolfChatSendBtn" class="btn btn-danger px-3">
+                        <i class="bi bi-send-fill"></i>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Chat (nur Tag + Voting) -->
+            <div id="chatSection" class="card shadow d-none">
+                <div class="card-header fw-semibold">
+                    <i class="bi bi-chat-dots-fill"></i> Chat
+                </div>
+                <div id="chatMessages" class="chat-messages p-3"></div>
+                <div class="chat-input-row p-2 border-top d-flex gap-2">
+                    <input type="text" id="chatInput" class="form-control"
+                           placeholder="Nachricht..." maxlength="300" autocomplete="off">
+                    <button id="chatSendBtn" class="btn btn-primary px-3">
+                        <i class="bi bi-send-fill"></i>
+                    </button>
+                </div>
+            </div>
+
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 <script src="js/state.js"></script>
 <script src="js/socket.js"></script>
 <script src="js/game.js"></script>

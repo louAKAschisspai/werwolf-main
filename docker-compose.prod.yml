@@ -2,7 +2,6 @@ services:
 
   nginx:
     image: nginx:alpine
-    container_name: werwolf-nginx
     ports:
       - "80:80"
     volumes:
@@ -22,7 +21,7 @@ services:
     environment:
       MYSQL_DATABASE: werwolf
       MYSQL_USER: werwolfuser
-      MYSQL_PASSWORD: werwolfpass
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
       MYSQL_HOSTNAME: db
       REDIS_URL: redis://redis:6379
     depends_on:
@@ -42,7 +41,7 @@ services:
     environment:
       MYSQL_DATABASE: werwolf
       MYSQL_USER: werwolfuser
-      MYSQL_PASSWORD: werwolfpass
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
       MYSQL_HOSTNAME: db
       REDIS_URL: redis://redis:6379
     depends_on:
@@ -62,7 +61,7 @@ services:
     environment:
       MYSQL_DATABASE: werwolf
       MYSQL_USER: werwolfuser
-      MYSQL_PASSWORD: werwolfpass
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
       MYSQL_HOSTNAME: db
       REDIS_URL: redis://redis:6379
     depends_on:
@@ -84,39 +83,24 @@ services:
       retries: 10
 
   db:
-    image: mariadb:latest
+    image: mariadb:10.11
     container_name: werwolf-db
     restart: always
     environment:
-      MYSQL_ROOT_PASSWORD: root
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: werwolf
       MYSQL_USER: werwolfuser
-      MYSQL_PASSWORD: werwolfpass
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
     volumes:
       - db_data:/var/lib/mysql
       - ./backend/db-init.sql:/docker-entrypoint-initdb.d/init.sql
-    ports:
-      - "3307:3306"
+    # Kein Port nach außen – DB ist nur intern erreichbar
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 10s
       timeout: 5s
       retries: 10
       start_period: 30s
-
-  phpmyadmin:
-    image: phpmyadmin/phpmyadmin
-    container_name: werwolf-phpmyadmin
-    restart: always
-    ports:
-      - "8085:80"
-    environment:
-      PMA_HOST: db
-      PMA_USER: werwolfuser
-      PMA_PASSWORD: werwolfpass
-    depends_on:
-      db:
-        condition: service_healthy
 
 volumes:
   db_data:

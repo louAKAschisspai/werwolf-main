@@ -14,5 +14,10 @@ const gameState = {
     votingResult: null,
     isFirstDay: true,
     afterNight: false,
-    announcement: ""
+    announcement: "",
+    leaderName: null,
+    activeRoles: { witch: false, seer: false },
+    witchHealUsed: false,
+    witchPoisonUsed: false,
+    nightVictim: null,
 };
