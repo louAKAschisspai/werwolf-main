@@ -18,6 +18,13 @@ CREATE TABLE IF NOT EXISTS rooms (
     witch_heal_used      TINYINT(1)   NOT NULL DEFAULT 0,
     witch_poison_used    TINYINT(1)   NOT NULL DEFAULT 0,
     night_victim         VARCHAR(100),
+    voting_duration      INT          NOT NULL DEFAULT 60,
+    witch_poison_victim  VARCHAR(100),
+    active_hunter        TINYINT(1)   NOT NULL DEFAULT 0,
+    active_amor          TINYINT(1)   NOT NULL DEFAULT 0,
+    lover_names          VARCHAR(200),
+    hunter_revenge_used  TINYINT(1)   NOT NULL DEFAULT 0,
+    after_hunter_revenge VARCHAR(50),
     created_at           TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
@@ -28,6 +35,13 @@ ALTER TABLE rooms ADD COLUMN IF NOT EXISTS active_seer       TINYINT(1)   NOT NU
 ALTER TABLE rooms ADD COLUMN IF NOT EXISTS witch_heal_used   TINYINT(1)   NOT NULL DEFAULT 0;
 ALTER TABLE rooms ADD COLUMN IF NOT EXISTS witch_poison_used TINYINT(1)   NOT NULL DEFAULT 0;
 ALTER TABLE rooms ADD COLUMN IF NOT EXISTS night_victim      VARCHAR(100);
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS voting_duration      INT          NOT NULL DEFAULT 60;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS witch_poison_victim  VARCHAR(100);
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS active_hunter        TINYINT(1)   NOT NULL DEFAULT 0;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS active_amor          TINYINT(1)   NOT NULL DEFAULT 0;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS lover_names          VARCHAR(200);
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS hunter_revenge_used  TINYINT(1)   NOT NULL DEFAULT 0;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS after_hunter_revenge VARCHAR(50);
 
 -- Spieler: gehören zu einem Raum
 CREATE TABLE IF NOT EXISTS players (

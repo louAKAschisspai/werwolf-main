@@ -19,10 +19,13 @@ const PORT = 8080;
 app.use(express.static('/app/frontend'));
 
 // --- In-Memory Spielzustand ---
-const rooms = {}; // { "room-id": { players: [], gameState: {} } }
+const rooms = {};
 
 // Grace-Period-Timer: Spieler wird erst nach 30s wirklich entfernt
 const gracePeriodTimers = new Map();
+
+// Countdown-Timer pro Raum (Abstimmungs- und Rollen-Timer)
+const roomTimers = new Map();
 
 // Verhindert doppelte DB-Ladevorgänge wenn mehrere Spieler gleichzeitig reconnecten
 const roomLoadingPromises = new Map();
@@ -49,6 +52,61 @@ function systemChat(roomId, text) {
     rooms[roomId].chatHistory.push(msg);
     if (rooms[roomId].chatHistory.length > 150) rooms[roomId].chatHistory.shift();
     io.to(roomId).emit('chatMessage', msg);
+}
+
+// --- Countdown Helpers ---
+function startCountdown(roomId, durationSec, onExpire) {
+    clearCountdown(roomId);
+    const endsAt = Date.now() + durationSec * 1000;
+    if (rooms[roomId]?.gameState) {
+        rooms[roomId].gameState.countdownEnd = endsAt;
+        rooms[roomId].gameState.countdownDuration = durationSec;
+    }
+    const timer = setTimeout(async () => {
+        roomTimers.delete(roomId);
+        if (!rooms[roomId]) return;
+        await onExpire();
+    }, durationSec * 1000);
+    roomTimers.set(roomId, timer);
+    io.to(roomId).emit('countdownStart', { endsAt, duration: durationSec });
+}
+
+function clearCountdown(roomId) {
+    if (roomTimers.has(roomId)) {
+        clearTimeout(roomTimers.get(roomId));
+        roomTimers.delete(roomId);
+    }
+    if (rooms[roomId]?.gameState) {
+        rooms[roomId].gameState.countdownEnd = null;
+        rooms[roomId].gameState.countdownDuration = 0;
+    }
+}
+
+// Personalisierter GameState: votes/loverNames werden je nach Spieler und Phase gefiltert
+function buildPlayerGameState(gs, playerName) {
+    const isActiveVoting = gs.phase === 'voting' || (gs.phase === 'night' && gs.isWerewolfVoting);
+    const isLover = (gs.loverNames || []).includes(playerName);
+    const state = Object.assign({}, gs);
+    if (isActiveVoting) {
+        state.votes = {};
+        state.werewolfVotes = {};
+    }
+    // loverNames nur für Verliebte sichtbar (und für alle bei Game Over)
+    state.loverNames = (isLover || gs.gameOver) ? (gs.loverNames || []) : [];
+    return state;
+}
+
+// --- Broadcast: pro Spieler personalisiert (votes + loverNames privat) ---
+function broadcastGameState(roomId) {
+    if (!rooms[roomId]) return;
+    const gs = rooms[roomId].gameState;
+    gs.players.forEach(player => {
+        if (player.socketId) {
+            io.to(player.socketId).emit('gameStateUpdated', {
+                gameState: buildPlayerGameState(gs, player.name)
+            });
+        }
+    });
 }
 
 // --- Redis-Verbindung + Socket.io Adapter ---
@@ -102,27 +160,36 @@ async function saveRoomToDB(roomId) {
              (room_id, phase, round, num_werewolves, is_first_day, after_night,
               killed_in_night, voting_result, voting_round, is_werewolf_voting,
               current_voter_index, game_over, announcement,
-              active_witch, active_seer, witch_heal_used, witch_poison_used, night_victim)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              active_witch, active_seer, witch_heal_used, witch_poison_used, night_victim,
+              voting_duration, witch_poison_victim,
+              active_hunter, active_amor, lover_names, hunter_revenge_used, after_hunter_revenge)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON DUPLICATE KEY UPDATE
-               phase               = VALUES(phase),
-               round               = VALUES(round),
-               num_werewolves      = VALUES(num_werewolves),
-               is_first_day        = VALUES(is_first_day),
-               after_night         = VALUES(after_night),
-               killed_in_night     = VALUES(killed_in_night),
-               voting_result       = VALUES(voting_result),
-               voting_round        = VALUES(voting_round),
-               is_werewolf_voting  = VALUES(is_werewolf_voting),
-               current_voter_index = VALUES(current_voter_index),
-               game_over           = VALUES(game_over),
-               announcement        = VALUES(announcement),
-               active_witch        = VALUES(active_witch),
-               active_seer         = VALUES(active_seer),
-               witch_heal_used     = VALUES(witch_heal_used),
-               witch_poison_used   = VALUES(witch_poison_used),
-               night_victim        = VALUES(night_victim),
-               updated_at          = CURRENT_TIMESTAMP`,
+               phase                = VALUES(phase),
+               round                = VALUES(round),
+               num_werewolves       = VALUES(num_werewolves),
+               is_first_day         = VALUES(is_first_day),
+               after_night          = VALUES(after_night),
+               killed_in_night      = VALUES(killed_in_night),
+               voting_result        = VALUES(voting_result),
+               voting_round         = VALUES(voting_round),
+               is_werewolf_voting   = VALUES(is_werewolf_voting),
+               current_voter_index  = VALUES(current_voter_index),
+               game_over            = VALUES(game_over),
+               announcement         = VALUES(announcement),
+               active_witch         = VALUES(active_witch),
+               active_seer          = VALUES(active_seer),
+               witch_heal_used      = VALUES(witch_heal_used),
+               witch_poison_used    = VALUES(witch_poison_used),
+               night_victim         = VALUES(night_victim),
+               voting_duration      = VALUES(voting_duration),
+               witch_poison_victim  = VALUES(witch_poison_victim),
+               active_hunter        = VALUES(active_hunter),
+               active_amor          = VALUES(active_amor),
+               lover_names          = VALUES(lover_names),
+               hunter_revenge_used  = VALUES(hunter_revenge_used),
+               after_hunter_revenge = VALUES(after_hunter_revenge),
+               updated_at           = CURRENT_TIMESTAMP`,
             [
                 roomId,
                 gs.phase,
@@ -134,14 +201,21 @@ async function saveRoomToDB(roomId) {
                 gs.votingResult  ?? null,
                 gs.votingRound,
                 gs.isWerewolfVoting ? 1 : 0,
-                gs.currentVoterIndex,
+                0,
                 gs.gameOver ? 1 : 0,
                 gs.announcement ?? null,
-                gs.activeRoles?.witch ? 1 : 0,
-                gs.activeRoles?.seer  ? 1 : 0,
+                gs.activeRoles?.witch   ? 1 : 0,
+                gs.activeRoles?.seer    ? 1 : 0,
                 gs.witchHealUsed   ? 1 : 0,
                 gs.witchPoisonUsed ? 1 : 0,
-                gs.nightVictim ?? null
+                gs.nightVictim ?? null,
+                gs.votingDuration ?? 60,
+                gs.witchPoisonVictim ?? null,
+                gs.activeRoles?.hunter  ? 1 : 0,
+                gs.activeRoles?.amor    ? 1 : 0,
+                (gs.loverNames || []).join(',') || null,
+                gs.hunterRevengeUsed  ? 1 : 0,
+                gs.afterHunterRevenge ?? null,
             ]
         );
 
@@ -189,6 +263,7 @@ function defaultGameState() {
         currentVoters: [],
         votes: {},
         werewolfVotes: {},
+        hasVotedNames: [],       // Wer hat schon abgestimmt (ohne Ziel, für alle sichtbar)
         isWerewolfVoting: false,
         votingRound: 1,
         isFirstDay: false,
@@ -201,6 +276,14 @@ function defaultGameState() {
         witchHealUsed: false,
         witchPoisonUsed: false,
         nightVictim: null,
+        witchPoisonVictim: null, // Giftopfer der Hexe (wird erst bei Tag aufgedeckt)
+        votingDuration: 60,      // Abstimmungszeit in Sekunden (30/60/90)
+        countdownEnd: null,      // Unix-Timestamp (ms) wann Countdown endet
+        countdownDuration: 0,    // Gesamtdauer des laufenden Countdowns
+        dayPhaseStart: null,     // Timestamp (ms) wann Tag-Phase begann (für 15s Mindestwartezeit)
+        loverNames: [],          // [name1, name2] – das Liebespaar (privat, nur für Verliebte)
+        hunterRevengeUsed: false,// Hat der Jäger sein Rache-Schuss genutzt?
+        afterHunterRevenge: null,// Wohin nach Jäger-Rache: 'day' | 'result'
     };
 }
 
@@ -244,22 +327,30 @@ async function loadRoomsFromDB() {
                         witch: !!row.active_witch,
                         seer:  !!row.active_seer,
                     },
-                    witchHealUsed:   !!row.witch_heal_used,
-                    witchPoisonUsed: !!row.witch_poison_used,
-                    nightVictim:     row.night_victim ?? null,
+                    witchHealUsed:       !!row.witch_heal_used,
+                    witchPoisonUsed:     !!row.witch_poison_used,
+                    nightVictim:         row.night_victim ?? null,
+                    votingDuration:      row.voting_duration ?? 60,
+                    witchPoisonVictim:   row.witch_poison_victim ?? null,
+                    activeRoles: {
+                        witch:  !!row.active_witch,
+                        seer:   !!row.active_seer,
+                        hunter: !!row.active_hunter,
+                        amor:   !!row.active_amor,
+                    },
+                    loverNames:          row.lover_names ? row.lover_names.split(',') : [],
+                    hunterRevengeUsed:   !!row.hunter_revenge_used,
+                    afterHunterRevenge:  row.after_hunter_revenge ?? null,
                     players,
-                    currentVoters: [],
-                    votes:         {},
-                    werewolfVotes: {}
+                    currentVoters:    [],
+                    votes:            {},
+                    werewolfVotes:    {},
+                    hasVotedNames:    [],
+                    countdownEnd:     null,
+                    countdownDuration: 0,
                 }
             };
 
-            const gs = rooms[row.room_id].gameState;
-            if (gs.phase === 'night') {
-                gs.currentVoters = gs.players.filter(p => p.role === 'werewolf' && p.alive);
-            } else if (gs.phase === 'voting') {
-                gs.currentVoters = gs.players.filter(p => p.alive);
-            }
             updateLeaderName(row.room_id);
         }
         console.log(`${roomRows.length} aktive Räume aus der Datenbank geladen`);
@@ -318,25 +409,32 @@ async function loadSingleRoomFromDB(roomId) {
                         witch: !!row.active_witch,
                         seer:  !!row.active_seer,
                     },
-                    witchHealUsed:   !!row.witch_heal_used,
-                    witchPoisonUsed: !!row.witch_poison_used,
-                    nightVictim:     row.night_victim ?? null,
+                    witchHealUsed:       !!row.witch_heal_used,
+                    witchPoisonUsed:     !!row.witch_poison_used,
+                    nightVictim:         row.night_victim ?? null,
+                    votingDuration:      row.voting_duration ?? 60,
+                    witchPoisonVictim:   row.witch_poison_victim ?? null,
+                    activeRoles: {
+                        witch:  !!row.active_witch,
+                        seer:   !!row.active_seer,
+                        hunter: !!row.active_hunter,
+                        amor:   !!row.active_amor,
+                    },
+                    loverNames:          row.lover_names ? row.lover_names.split(',') : [],
+                    hunterRevengeUsed:   !!row.hunter_revenge_used,
+                    afterHunterRevenge:  row.after_hunter_revenge ?? null,
                     players,
-                    currentVoters: [],
-                    votes:         {},
-                    werewolfVotes: {}
+                    currentVoters:    [],
+                    votes:            {},
+                    werewolfVotes:    {},
+                    hasVotedNames:    [],
+                    countdownEnd:     null,
+                    countdownDuration: 0,
                 }
             };
 
-            const gs = rooms[roomId].gameState;
-            if (gs.phase === 'night') {
-                gs.currentVoters = gs.players.filter(p => p.role === 'werewolf' && p.alive);
-            } else if (gs.phase === 'voting') {
-                gs.currentVoters = gs.players.filter(p => p.alive);
-            }
-
             updateLeaderName(roomId);
-            console.log(`Raum ${roomId} on-demand aus DB geladen (Phase: ${gs.phase})`);
+            console.log(`Raum ${roomId} on-demand aus DB geladen (Phase: ${rooms[roomId].gameState.phase})`);
         } catch (err) {
             console.error('DB-Fehler (loadSingleRoomFromDB):', err.message);
         }
@@ -377,12 +475,22 @@ async function refreshRoomFromDB(roomId) {
         gs.currentVoterIndex = row.current_voter_index;
         gs.gameOver          = !!row.game_over;
         gs.announcement      = row.announcement;
-        gs.activeRoles       = { witch: !!row.active_witch, seer: !!row.active_seer };
-        gs.witchHealUsed     = !!row.witch_heal_used;
-        gs.witchPoisonUsed   = !!row.witch_poison_used;
-        gs.nightVictim       = row.night_victim ?? null;
+        gs.witchHealUsed      = !!row.witch_heal_used;
+        gs.witchPoisonUsed    = !!row.witch_poison_used;
+        gs.nightVictim        = row.night_victim ?? null;
+        gs.votingDuration     = row.voting_duration ?? 60;
+        gs.witchPoisonVictim  = row.witch_poison_victim ?? null;
+        gs.activeRoles        = {
+            witch:  !!row.active_witch,
+            seer:   !!row.active_seer,
+            hunter: !!row.active_hunter,
+            amor:   !!row.active_amor,
+        };
+        gs.loverNames         = row.lover_names ? row.lover_names.split(',') : [];
+        gs.hunterRevengeUsed  = !!row.hunter_revenge_used;
+        gs.afterHunterRevenge = row.after_hunter_revenge ?? null;
 
-        // In-Memory-socketIds sichern (darf nicht durch DB-Werte überschrieben werden)
+        // In-Memory-socketIds sichern
         const liveSocketIds = {};
         gs.players.forEach(p => { liveSocketIds[p.name] = p.socketId; });
 
@@ -394,12 +502,6 @@ async function refreshRoomFromDB(roomId) {
             joinOrder: p.join_order
         }));
 
-        if (gs.phase === 'night') {
-            gs.currentVoters = gs.players.filter(p => p.role === 'werewolf' && p.alive);
-        } else if (gs.phase === 'voting') {
-            gs.currentVoters = gs.players.filter(p => p.alive);
-        }
-
         updateLeaderName(roomId);
 
         gs.votes = {};
@@ -409,6 +511,13 @@ async function refreshRoomFromDB(roomId) {
             else gs.votes[v.voter_name] = v.target;
         });
 
+        // hasVotedNames aus geladenen Stimmen rekonstruieren
+        if (gs.phase === 'voting') {
+            gs.hasVotedNames = Object.keys(gs.votes);
+        } else if (gs.phase === 'night' && gs.isWerewolfVoting) {
+            gs.hasVotedNames = Object.keys(gs.werewolfVotes);
+        }
+
     } catch (err) {
         console.error('DB-Fehler (refreshRoomFromDB):', err.message);
     }
@@ -417,8 +526,57 @@ async function refreshRoomFromDB(roomId) {
 // --- Hilfsfunktionen ---
 
 function roleText(role) {
-    const map = { werewolf: 'Werwolf', witch: 'Hexe', seer: 'Seherin', villager: 'Dorfbewohner' };
+    const map = { werewolf: 'Werwolf', witch: 'Hexe', seer: 'Seherin', villager: 'Dorfbewohner', hunter: 'Jäger', amor: 'Amor' };
     return map[role] || role || '?';
+}
+
+// Hilfsfunktion: Ist der Jäger gestorben und hat noch nicht geschossen?
+function isHunterDead(roomId) {
+    const gs = rooms[roomId].gameState;
+    if (gs.hunterRevengeUsed || !gs.activeRoles?.hunter) return false;
+    const hunter = gs.players.find(p => p.role === 'hunter');
+    return !!(hunter && !hunter.alive);
+}
+
+// Nacht-Phase starten (nach Amor oder direkt beim ersten Tag)
+function startNightPhase(roomId) {
+    const gs = rooms[roomId].gameState;
+    gs.phase = 'night';
+    gs.isWerewolfVoting = true;
+    gs.currentVoters = gs.players.filter(p => p.role === 'werewolf' && p.alive);
+    gs.currentVoterIndex = 0;
+    gs.werewolfVotes = {};
+    gs.hasVotedNames = [];
+    gs.votingRound = 1;
+    gs.nightVictim = null;
+    gs.announcement = null;
+    broadcastGameState(roomId);
+    saveRoomToDB(roomId);
+    startCountdown(roomId, 60, () => resolveWerewolfPhase(roomId));
+}
+
+// Nach Jäger-Rache zur nächsten Phase wechseln
+function proceedAfterHunterRevenge(roomId) {
+    const gs = rooms[roomId].gameState;
+    const next = gs.afterHunterRevenge || 'day';
+    gs.afterHunterRevenge = null;
+    gs.hunterRevengeUsed = true;
+
+    if (next === 'day') {
+        gs.phase = 'day';
+        gs.afterNight = true;
+        gs.announcement = '🌅 Das Dorf erwacht.';
+        gs.dayPhaseStart = Date.now();
+        broadcastGameState(roomId);
+        saveRoomToDB(roomId);
+        startCountdown(roomId, 90, () => dayTimeout(roomId));
+    } else {
+        // 'result'
+        gs.phase = 'result';
+        broadcastGameState(roomId);
+        saveRoomToDB(roomId);
+        startCountdown(roomId, 15, () => resultTimeout(roomId));
+    }
 }
 
 // --- Spiellogik ---
@@ -428,31 +586,42 @@ function assignRoles(roomId) {
     const shuffled = [...gs.players].sort(() => Math.random() - 0.5);
     let idx = 0;
 
-    // Werwölfe
     for (let i = 0; i < gs.numWerewolves && idx < shuffled.length; i++) {
         shuffled[idx++].role = 'werewolf';
     }
-    // Hexe
+    if (gs.activeRoles?.amor && idx < shuffled.length) {
+        shuffled[idx++].role = 'amor';
+    }
     if (gs.activeRoles?.witch && idx < shuffled.length) {
         shuffled[idx++].role = 'witch';
     }
-    // Seherin
     if (gs.activeRoles?.seer && idx < shuffled.length) {
         shuffled[idx++].role = 'seer';
     }
-    // Rest: Dorfbewohner
+    if (gs.activeRoles?.hunter && idx < shuffled.length) {
+        shuffled[idx++].role = 'hunter';
+    }
     for (; idx < shuffled.length; idx++) {
         shuffled[idx].role = 'villager';
     }
 
-    // Sortiere nach Join-Reihenfolge (absteigend)
     gs.players = shuffled.sort((a, b) => (b.joinOrder || 0) - (a.joinOrder || 0));
 }
 
 function killPlayer(roomId, name) {
-    const player = rooms[roomId].gameState.players.find(p => p.name === name);
-    if (player && player.alive) {
-        player.alive = false;
+    const gs = rooms[roomId].gameState;
+    const player = gs.players.find(p => p.name === name);
+    if (!player || !player.alive) return;
+    player.alive = false;
+
+    // Liebesketten-Reaktion: stirbt ein Verliebter, stirbt der Partner auch
+    if (gs.loverNames && gs.loverNames.includes(name)) {
+        const partnerName = gs.loverNames.find(n => n !== name);
+        const partner = gs.players.find(p => p.name === partnerName);
+        if (partner && partner.alive) {
+            partner.alive = false;
+            systemChat(roomId, `💔 ${partnerName} (${roleText(partner.role)}) stirbt vor Liebeskummer.`);
+        }
     }
 }
 
@@ -460,89 +629,109 @@ function checkGameOver(roomId) {
     const room = rooms[roomId];
     if (room.gameState.gameOver) return;
 
-    const wolves    = room.gameState.players.filter(p => p.role === 'werewolf' && p.alive).length;
-    // Village-Team = alle Nicht-Werwölfe (Dorfbewohner + Hexe + Seherin)
-    const villagers = room.gameState.players.filter(p => p.role !== 'werewolf' && p.alive).length;
+    const gs = room.gameState;
+    const alive    = gs.players.filter(p => p.alive);
+    const wolves   = alive.filter(p => p.role === 'werewolf').length;
+    const others   = alive.filter(p => p.role !== 'werewolf').length;
 
-    if (wolves === 0) {
-        room.gameState.phase      = 'game_over';
-        room.gameState.gameOver   = true;
-        room.gameState.announcement = '🎉 Dorfbewohner gewinnen!';
-        systemChat(roomId, '🏁 Spiel vorbei! Die Dorfbewohner haben gewonnen!');
-    } else if (wolves >= villagers) {
-        room.gameState.phase      = 'game_over';
-        room.gameState.gameOver   = true;
-        room.gameState.announcement = '🐺 Werwölfe gewinnen!';
-        systemChat(roomId, '🏁 Spiel vorbei! Die Werwölfe haben gewonnen!');
-    }
-}
+    // Spiel endet nur wenn Standardbedingung erfüllt ist
+    if (wolves !== 0 && wolves < others) return;
 
-// Werwolf-Abstimmung auswerten → Ergebnis in nightVictim speichern (kein Kill noch)
-function resolveWerewolfVotes(roomId) {
-    const gs = rooms[roomId].gameState;
-    const counts = {};
-    Object.values(gs.werewolfVotes).forEach(target => {
-        counts[target] = (counts[target] || 0) + 1;
-    });
-
-    let maxVotes = 0;
-    let killedPlayer = null;
-    let ties = [];
-
-    for (let player in counts) {
-        if (counts[player] > maxVotes) {
-            maxVotes = counts[player];
-            killedPlayer = player;
-            ties = [player];
-        } else if (counts[player] === maxVotes) {
-            ties.push(player);
+    // Beide Verliebten noch am Leben? → Liebespaar gewinnt
+    const loverNames = gs.loverNames || [];
+    if (loverNames.length === 2) {
+        const bothAlive = loverNames.every(n => gs.players.find(p => p.name === n)?.alive);
+        if (bothAlive) {
+            triggerGameOverResults(roomId, `💕 Das Liebespaar gewinnt!`,
+                `🏁 Spiel vorbei! Das Liebespaar (${loverNames[0]} & ${loverNames[1]}) hat gewonnen!`);
+            return;
         }
     }
 
-    if (ties.length === 1 && killedPlayer && killedPlayer !== 'Niemanden') {
-        gs.nightVictim = killedPlayer; // Kill wird erst nach Hexe/Seherin angewendet
-        return true;
-    } else if (ties.length === 1 && killedPlayer === 'Niemanden') {
-        gs.nightVictim = null;
-        return true;
-    } else if (gs.votingRound === 1) {
-        // Gleichstand in Runde 1 → nochmal abstimmen
-        gs.votingRound = 2;
-        gs.werewolfVotes = {};
-        gs.currentVoterIndex = 0;
-        gs.announcement = 'Gleichstand! Werwölfe stimmen erneut ab.';
-        io.to(roomId).emit('gameStateUpdated', { gameState: gs });
-        return false;
+    if (wolves === 0) {
+        triggerGameOverResults(roomId, '🎉 Dorfbewohner gewinnen!',
+            '🏁 Spiel vorbei! Die Dorfbewohner haben gewonnen!');
     } else {
-        // Gleichstand in Runde 2 → niemand stirbt
-        gs.nightVictim = null;
-        gs.announcement = 'Erneut Gleichstand – niemand wird getötet.';
-        return true;
+        triggerGameOverResults(roomId, '🐺 Werwölfe gewinnen!',
+            '🏁 Spiel vorbei! Die Werwölfe haben gewonnen!');
     }
+}
+
+// Zeige 90s lang die Ergebnisse, dann zum echten Game Over
+function triggerGameOverResults(roomId, announcement, chatMsg) {
+    if (!rooms[roomId]) return;
+    const gs = rooms[roomId].gameState;
+    gs.phase = 'game_over_results';
+    gs.gameOver = false; // noch nicht wirklich vorbei
+    gs.announcement = announcement;
+    gs.dayPhaseStart = Date.now(); // Für 15s Mindestwartezeit vor forcieren
+    systemChat(roomId, chatMsg);
+    broadcastGameState(roomId);
+    saveRoomToDB(roomId);
+    startCountdown(roomId, 15, () => finalizeGameOver(roomId));
+}
+
+// Nach 15s Ergebnis-Phase zum echten Game Over
+async function finalizeGameOver(roomId) {
+    if (!rooms[roomId]) return;
+    const gs = rooms[roomId].gameState;
+    if (gs.phase !== 'game_over_results') return;
+
+    gs.gameOver = true;
+    broadcastGameState(roomId);
+    saveRoomToDB(roomId);
 }
 
 // Nacht-Ergebnisse anwenden (nach Hexe + Seherin)
 function applyNightResults(roomId) {
     const gs = rooms[roomId].gameState;
 
+    let anyKilled = false;
+
     if (gs.nightVictim) {
         const victim = gs.players.find(p => p.name === gs.nightVictim);
         const victimRole = victim?.role;
         killPlayer(roomId, gs.nightVictim);
         gs.killedInNight = gs.nightVictim;
-        systemChat(roomId, `🌅 Neuer Tag – ${gs.nightVictim} (${roleText(victimRole)}) wurde in der Nacht getötet.`);
-    } else {
+        systemChat(roomId, `🌅 Neuer Tag – ${gs.nightVictim} (${roleText(victimRole)}) wurde von den Werwölfen getötet.`);
+        anyKilled = true;
+    }
+
+    // Hexen-Gift bei Tagesanbruch anwenden
+    if (gs.witchPoisonVictim) {
+        const poisonVictim = gs.players.find(p => p.name === gs.witchPoisonVictim);
+        const poisonRole = poisonVictim?.role;
+        killPlayer(roomId, gs.witchPoisonVictim);
+        systemChat(roomId, `☠️ ${gs.witchPoisonVictim} (${roleText(poisonRole)}) wurde von der Hexe vergiftet.`);
+        gs.witchPoisonVictim = null;
+        anyKilled = true;
+    }
+
+    if (!anyKilled) {
         gs.killedInNight = 'Niemand';
         systemChat(roomId, '🌅 Neuer Tag – alle haben die Nacht überlebt.');
     }
 
     gs.nightVictim = null;
-    gs.phase = 'day';
-    gs.afterNight = true;
     checkGameOver(roomId);
+    if (gs.gameOver || gs.phase === 'game_over_results') return;
+
+    // Jäger gestorben? → Rache-Phase einlegen
+    if (isHunterDead(roomId)) {
+        gs.phase = 'hunter_revenge';
+        gs.afterHunterRevenge = 'day';
+        gs.announcement = '🎯 Der Jäger darf noch ein letztes Opfer wählen!';
+        startCountdown(roomId, 60, () => hunterRevengeTimeout(roomId));
+    } else {
+        gs.phase = 'day';
+        gs.afterNight = true;
+        gs.announcement = '🌅 Das Dorf erwacht.';
+        gs.dayPhaseStart = Date.now();
+        startCountdown(roomId, 90, () => dayTimeout(roomId));
+    }
 }
 
-// Entscheidet nach Werwolf-Vote: Hexe → Seherin → Tag
+// Entscheidet nach Werwolf-Vote: Hexe → Seherin → Tag. Gibt neue Phase zurück.
 function advanceFromNight(roomId) {
     const gs = rooms[roomId].gameState;
 
@@ -550,20 +739,21 @@ function advanceFromNight(roomId) {
     if (gs.activeRoles?.witch && witch) {
         gs.phase = 'witch';
         gs.announcement = '🧙 Die Hexe ist am Zug...';
-        return;
+        return 'witch';
     }
 
     const seer = gs.players.find(p => p.role === 'seer' && p.alive);
     if (gs.activeRoles?.seer && seer) {
         gs.phase = 'seer';
         gs.announcement = '🔮 Die Seherin ist am Zug...';
-        return;
+        return 'seer';
     }
 
     applyNightResults(roomId);
+    return 'day';
 }
 
-// Entscheidet nach Hexe: Seherin → Tag
+// Entscheidet nach Hexe: Seherin → Tag. Gibt neue Phase zurück.
 function advanceFromWitch(roomId) {
     const gs = rooms[roomId].gameState;
 
@@ -571,55 +761,297 @@ function advanceFromWitch(roomId) {
     if (gs.activeRoles?.seer && seer) {
         gs.phase = 'seer';
         gs.announcement = '🔮 Die Seherin ist am Zug...';
-        return;
+        return 'seer';
     }
 
     applyNightResults(roomId);
+    return 'day';
 }
 
-// Tages-Abstimmung auswerten
+// --- Tages-Abstimmung auswerten (Gleichstand = niemand stirbt) ---
 function resolveVotes(roomId) {
-    const room = rooms[roomId];
+    const gs = rooms[roomId].gameState;
     const counts = {};
 
-    Object.values(room.gameState.votes).forEach(target => {
+    Object.values(gs.votes).forEach(target => {
         if (target !== 'Niemanden') {
             counts[target] = (counts[target] || 0) + 1;
         }
     });
 
     let maxVotes = 0;
-    let killedPlayer = null;
+    let winner = null;
     let candidates = [];
 
-    for (let player in counts) {
+    for (const player in counts) {
         if (counts[player] > maxVotes) {
             maxVotes = counts[player];
-            killedPlayer = player;
+            winner = player;
             candidates = [player];
         } else if (counts[player] === maxVotes) {
             candidates.push(player);
         }
     }
 
-    if (killedPlayer && candidates.length === 1) {
-        const executed = room.gameState.players.find(p => p.name === killedPlayer);
+    if (winner && candidates.length === 1) {
+        const executed = gs.players.find(p => p.name === winner);
         const executedRole = executed?.role;
-        killPlayer(roomId, killedPlayer);
-        room.gameState.votingResult = killedPlayer;
+        killPlayer(roomId, winner);
+        gs.votingResult = winner;
         checkGameOver(roomId);
-        if (!room.gameState.gameOver) {
-            room.gameState.announcement = `${killedPlayer} wurde getötet!`;
+        if (!gs.gameOver) {
+            gs.announcement = `⚖️ ${winner} (${roleText(executedRole)}) wurde durch Abstimmung hingerichtet.`;
         }
-        systemChat(roomId, `⚖️ ${killedPlayer} (${roleText(executedRole)}) wurde durch Abstimmung hingerichtet.`);
+        systemChat(roomId, `⚖️ ${winner} (${roleText(executedRole)}) wurde durch Abstimmung hingerichtet.`);
     } else {
-        room.gameState.votingResult = 'Niemand (Gleichstand)';
-        room.gameState.announcement = 'Gleichstand! Niemand wird getötet.';
+        gs.votingResult = 'Niemand';
+        gs.announcement = '⚖️ Gleichstand – niemand wird hingerichtet.';
         systemChat(roomId, '⚖️ Gleichstand – niemand wird hingerichtet.');
     }
 }
 
-// Phasenwechsel (nur Leiter)
+// --- Werwolf-Abstimmung auswerten und Phase weiterführen ---
+async function resolveWerewolfPhase(roomId) {
+    if (!rooms[roomId]) return;
+    await refreshRoomFromDB(roomId);
+    const gs = rooms[roomId].gameState;
+
+    // Guard: Sicherstellen dass wir noch in der richtigen Phase sind
+    if (gs.phase !== 'night' || !gs.isWerewolfVoting) return;
+
+    clearCountdown(roomId);
+
+    // Fehlende Wolf-Stimmen als 'Niemanden' auffüllen
+    const aliveWolves = gs.players.filter(p => p.role === 'werewolf' && p.alive);
+    aliveWolves.forEach(wolf => {
+        if (!gs.werewolfVotes[wolf.name]) {
+            gs.werewolfVotes[wolf.name] = 'Niemanden';
+        }
+    });
+    gs.hasVotedNames = [];
+
+    // Stimmen zählen
+    const counts = {};
+    Object.values(gs.werewolfVotes).forEach(target => {
+        if (target !== 'Niemanden') {
+            counts[target] = (counts[target] || 0) + 1;
+        }
+    });
+
+    let maxVotes = 0;
+    let winner = null;
+    let candidates = [];
+
+    for (const player in counts) {
+        if (counts[player] > maxVotes) {
+            maxVotes = counts[player];
+            winner = player;
+            candidates = [player];
+        } else if (counts[player] === maxVotes) {
+            candidates.push(player);
+        }
+    }
+
+    // Gleichstand nur wenn mehrere echte Kandidaten gleich viele Stimmen haben
+    const isTie = candidates.length > 1;
+
+    if (isTie && gs.votingRound === 1) {
+        // Gleichstand in Runde 1 → nochmal abstimmen mit neuem Countdown
+        gs.votingRound = 2;
+        gs.werewolfVotes = {};
+        gs.hasVotedNames = [];
+        gs.announcement = '⚖️ Gleichstand! Werwölfe stimmen erneut ab.';
+
+        // Alte Werwolf-Stimmen aus DB löschen für saubere Neuabstimmung
+        if (db) {
+            try {
+                await db.query(
+                    'DELETE FROM votes WHERE room_id = ? AND round = ? AND vote_type = ?',
+                    [roomId, gs.round, 'werewolf']
+                );
+            } catch (e) { /* ignorieren */ }
+        }
+
+        broadcastGameState(roomId);
+        saveRoomToDB(roomId);
+        startCountdown(roomId, 60, () => resolveWerewolfPhase(roomId));
+        return;
+    }
+
+    // Ergebnis festlegen
+    gs.nightVictim = (!isTie && winner) ? winner : null;
+    if (isTie) gs.announcement = '⚖️ Erneut Gleichstand – niemand wird getötet.';
+
+    const newPhase = advanceFromNight(roomId);
+    checkGameOver(roomId);
+    broadcastGameState(roomId);
+    saveRoomToDB(roomId);
+
+    if (!gs.gameOver) {
+        if (newPhase === 'witch') {
+            const witch = gs.players.find(p => p.role === 'witch' && p.alive);
+            if (witch?.socketId) {
+                io.to(witch.socketId).emit('witchInfo', {
+                    victim:     gs.nightVictim,
+                    healUsed:   gs.witchHealUsed,
+                    poisonUsed: gs.witchPoisonUsed,
+                });
+            }
+            startCountdown(roomId, 90, () => witchTimeout(roomId));
+        } else if (newPhase === 'seer') {
+            startCountdown(roomId, 90, () => seerTimeout(roomId));
+        }
+    }
+}
+
+// --- Tages-Abstimmung automatisch beenden ---
+async function resolveVotingPhase(roomId) {
+    if (!rooms[roomId]) return;
+    await refreshRoomFromDB(roomId);
+    const gs = rooms[roomId].gameState;
+
+    // Guard: Nur auflösen wenn noch in Voting-Phase
+    if (gs.phase !== 'voting') return;
+
+    clearCountdown(roomId);
+
+    // Fehlende Stimmen als 'Niemanden' auffüllen
+    const alivePlayers = gs.players.filter(p => p.alive);
+    alivePlayers.forEach(p => {
+        if (!gs.votes[p.name]) gs.votes[p.name] = 'Niemanden';
+    });
+    gs.hasVotedNames = [];
+
+    resolveVotes(roomId);
+    gs.votes = {};
+    gs.werewolfVotes = {};
+    gs.hasVotedNames = [];
+
+    // Wenn game_over_results Phase erreicht wurde, stoppen
+    if (gs.phase === 'game_over_results') {
+        broadcastGameState(roomId);
+        saveRoomToDB(roomId);
+        return;
+    }
+
+    // Jäger gestorben? → Rache-Phase einlegen
+    if (isHunterDead(roomId)) {
+        gs.phase = 'hunter_revenge';
+        gs.afterHunterRevenge = 'result';
+        gs.announcement = '🎯 Der Jäger darf noch ein letztes Opfer wählen!';
+        broadcastGameState(roomId);
+        saveRoomToDB(roomId);
+        startCountdown(roomId, 60, () => hunterRevengeTimeout(roomId));
+        return;
+    }
+
+    // Kurze Ergebnis-Phase (15s) bevor die Nacht beginnt
+    gs.phase = 'result';
+    broadcastGameState(roomId);
+    saveRoomToDB(roomId);
+    startCountdown(roomId, 15, () => resultTimeout(roomId));
+}
+
+// --- Ergebnis-Phase abgelaufen: Weiter zur Nacht ---
+async function resultTimeout(roomId) {
+    if (!rooms[roomId]) return;
+    const gs = rooms[roomId].gameState;
+    if (gs.phase !== 'result') return;
+
+    gs.phase = 'night';
+    gs.round++;
+    gs.votingResult = null;
+    gs.isWerewolfVoting = true;
+    gs.currentVoters = gs.players.filter(p => p.role === 'werewolf' && p.alive);
+    gs.currentVoterIndex = 0;
+    gs.votingRound = 1;
+    gs.afterNight = false;
+    gs.nightVictim = null;
+    gs.announcement = null;
+
+    broadcastGameState(roomId);
+    saveRoomToDB(roomId);
+
+    if (!gs.gameOver) {
+        startCountdown(roomId, 60, () => resolveWerewolfPhase(roomId));
+    }
+}
+
+// --- Jäger hat nicht gehandelt: Phase automatisch weiterführen ---
+async function hunterRevengeTimeout(roomId) {
+    if (!rooms[roomId]) return;
+    const gs = rooms[roomId].gameState;
+    if (gs.phase !== 'hunter_revenge') return;
+
+    systemChat(roomId, '🎯 Der Jäger hat sein Recht nicht genutzt.');
+    proceedAfterHunterRevenge(roomId);
+}
+
+// --- Amor-Phase abgelaufen: direkt zur Nacht ---
+async function amorTimeout(roomId) {
+    if (!rooms[roomId]) return;
+    const gs = rooms[roomId].gameState;
+    if (gs.phase !== 'amor') return;
+
+    startNightPhase(roomId);
+}
+
+// --- Amor-Benachrichtigungs-Phase abgelaufen: zur Nacht ---
+async function amorNotifyTimeout(roomId) {
+    if (!rooms[roomId]) return;
+    const gs = rooms[roomId].gameState;
+    if (gs.phase !== 'amor_notify') return;
+
+    startNightPhase(roomId);
+}
+
+// --- Hexe hat nicht gehandelt: Phase automatisch weiterschieben ---
+async function witchTimeout(roomId) {
+    if (!rooms[roomId]) return;
+    const gs = rooms[roomId].gameState;
+    if (gs.phase !== 'witch') return;
+
+    const newPhase = advanceFromWitch(roomId);
+    broadcastGameState(roomId);
+    saveRoomToDB(roomId);
+
+    if (!gs.gameOver && newPhase === 'seer') {
+        startCountdown(roomId, 90, () => seerTimeout(roomId));
+    }
+}
+
+// --- Tag-Diskussion abgelaufen: automatisch zur Abstimmung ---
+async function dayTimeout(roomId) {
+    if (!rooms[roomId]) return;
+    const gs = rooms[roomId].gameState;
+    if (gs.phase !== 'day' || !gs.afterNight) return;
+
+    gs.afterNight = false;
+    gs.phase = 'voting';
+    gs.isWerewolfVoting = false;
+    gs.currentVoters = gs.players.filter(p => p.alive);
+    gs.currentVoterIndex = 0;
+    gs.votes = {};
+    gs.hasVotedNames = [];
+    gs.announcement = null;
+
+    broadcastGameState(roomId);
+    saveRoomToDB(roomId);
+    startCountdown(roomId, gs.votingDuration || 60, () => resolveVotingPhase(roomId));
+}
+
+// --- Seherin hat nicht gehandelt: Phase automatisch weiterschieben ---
+async function seerTimeout(roomId) {
+    if (!rooms[roomId]) return;
+    const gs = rooms[roomId].gameState;
+    if (gs.phase !== 'seer') return;
+
+    applyNightResults(roomId);
+    broadcastGameState(roomId);
+    saveRoomToDB(roomId);
+}
+
+// --- Phasenwechsel (nur Leiter) ---
 function nextPhase(roomId) {
     const room = rooms[roomId];
     if (!room || room.gameState.gameOver) return;
@@ -630,63 +1062,85 @@ function nextPhase(roomId) {
         gs.phase = 'day';
         gs.isFirstDay = true;
 
-    } else if (gs.phase === 'night') {
-        if (gs.currentVoterIndex >= gs.currentVoters.length) {
-            const phaseComplete = resolveWerewolfVotes(roomId);
-            if (phaseComplete) {
-                advanceFromNight(roomId); // setzt phase auf witch/seer/day
-            }
+    } else if (gs.phase === 'game_over_results') {
+        // 15s Mindestwartezeit prüfen
+        if (gs.dayPhaseStart && Date.now() - gs.dayPhaseStart < 15000) {
+            return; // Zu früh – ignorieren
         }
+        clearCountdown(roomId);
+        finalizeGameOver(roomId);
+        return;
+
+    } else if (gs.phase === 'day' && gs.isFirstDay) {
+        // Erste Nacht – ggf. Amor zuerst
+        gs.isFirstDay = false;
+        const amor = gs.players.find(p => p.role === 'amor' && p.alive);
+        if (gs.activeRoles?.amor && amor) {
+            gs.phase = 'amor';
+            gs.announcement = '💘 Amor ist am Zug...';
+            broadcastGameState(roomId);
+            saveRoomToDB(roomId);
+            startCountdown(roomId, 90, () => amorTimeout(roomId));
+            return;
+        }
+        // Kein Amor → direkt Nacht
+        startNightPhase(roomId);
+        return;
+
+    } else if (gs.phase === 'amor') {
+        // Leiter überspringt Amor-Phase
+        clearCountdown(roomId);
+        startNightPhase(roomId);
+        return;
+
+    } else if (gs.phase === 'day' && gs.afterNight) {
+        // 15s Mindestdiskussionszeit prüfen
+        if (gs.dayPhaseStart && Date.now() - gs.dayPhaseStart < 15000) {
+            return; // Zu früh – ignorieren
+        }
+        clearCountdown(roomId); // 90s Tages-Timer stoppen
+        // Tages-Abstimmung starten
+        gs.afterNight = false;
+        gs.phase = 'voting';
+        gs.isWerewolfVoting = false;
+        gs.currentVoters = gs.players.filter(p => p.alive);
+        gs.currentVoterIndex = 0;
+        gs.votes = {};
+        gs.hasVotedNames = [];
+        gs.announcement = null;
 
     } else if (gs.phase === 'witch') {
-        // Leiter kann Hexen-Phase überspringen
-        advanceFromWitch(roomId);
+        // Leiter überspringt Hexen-Phase
+        clearCountdown(roomId);
+        const newPhase = advanceFromWitch(roomId);
+        broadcastGameState(roomId);
+        saveRoomToDB(roomId);
+        if (!gs.gameOver && newPhase === 'seer') {
+            startCountdown(roomId, 90, () => seerTimeout(roomId));
+        }
+        return;
 
     } else if (gs.phase === 'seer') {
-        // Leiter kann Seherin-Phase überspringen
+        // Leiter überspringt Seherin-Phase
+        clearCountdown(roomId);
         applyNightResults(roomId);
-
-    } else if (gs.phase === 'day') {
-        if (gs.isFirstDay) {
-            gs.isFirstDay = false;
-            gs.phase = 'night';
-            gs.isWerewolfVoting = true;
-            gs.currentVoters = gs.players.filter(p => p.role === 'werewolf' && p.alive);
-            gs.currentVoterIndex = 0;
-            gs.werewolfVotes = {};
-            gs.votingRound = 1;
-            gs.nightVictim = null;
-        } else if (gs.afterNight) {
-            gs.afterNight = false;
-            gs.phase = 'voting';
-            gs.isWerewolfVoting = false;
-            gs.currentVoters = gs.players.filter(p => p.alive);
-            gs.currentVoterIndex = 0;
-            gs.votes = {};
-        }
-
-    } else if (gs.phase === 'voting') {
-        if (gs.currentVoterIndex >= gs.currentVoters.length) {
-            resolveVotes(roomId);
-            if (!gs.gameOver) {
-                gs.phase = 'night';
-                gs.round++;
-                gs.votes = {};
-                gs.werewolfVotes = {};
-                gs.votingResult = null;
-                gs.isWerewolfVoting = true;
-                gs.currentVoters = gs.players.filter(p => p.role === 'werewolf' && p.alive);
-                gs.currentVoterIndex = 0;
-                gs.votingRound = 1;
-                gs.afterNight = false;
-                gs.nightVictim = null;
-            }
-        }
+        broadcastGameState(roomId);
+        saveRoomToDB(roomId);
+        return;
     }
 
     checkGameOver(roomId);
-    io.to(roomId).emit('gameStateUpdated', { gameState: gs });
+    broadcastGameState(roomId);
     saveRoomToDB(roomId);
+
+    // Countdown für neue Phase starten
+    if (!gs.gameOver) {
+        if (gs.phase === 'night') {
+            startCountdown(roomId, 60, () => resolveWerewolfPhase(roomId));
+        } else if (gs.phase === 'voting') {
+            startCountdown(roomId, gs.votingDuration || 60, () => resolveVotingPhase(roomId));
+        }
+    }
 
     // Private Hexen-Info senden wenn Hexen-Phase beginnt
     if (gs.phase === 'witch') {
@@ -698,6 +1152,7 @@ function nextPhase(roomId) {
                 poisonUsed: gs.witchPoisonUsed,
             });
         }
+        startCountdown(roomId, 90, () => witchTimeout(roomId));
     }
 }
 
@@ -725,15 +1180,21 @@ io.on('connection', (socket) => {
                 existing.socketId = socket.id;
                 const inList = rooms[roomId].players.find(p => p.name === playerName);
                 if (inList) inList.socketId = socket.id;
-                const inVoters = rooms[roomId].gameState.currentVoters.find(p => p.name === playerName);
-                if (inVoters) inVoters.socketId = socket.id;
 
                 saveRoomToDB(roomId);
                 updateLeaderName(roomId);
-                socket.emit('gameStateUpdated', { gameState: rooms[roomId].gameState });
+
+                const gs = rooms[roomId].gameState;
+
+                // Personalisierten GameState senden (votes + loverNames je nach Spieler)
+                socket.emit('gameStateUpdated', {
+                    gameState: buildPlayerGameState(gs, playerName)
+                });
+
                 if (rooms[roomId].chatHistory && rooms[roomId].chatHistory.length > 0) {
                     socket.emit('chatHistory', rooms[roomId].chatHistory);
                 }
+
                 // Wolf-Chat-Historie nur an Wölfe schicken
                 if (existing.role === 'werewolf' &&
                     rooms[roomId].werewolfChatHistory && rooms[roomId].werewolfChatHistory.length > 0) {
@@ -741,12 +1202,25 @@ io.on('connection', (socket) => {
                 }
 
                 // Hexen-Info erneut senden falls Hexen-Phase aktiv
-                const gs = rooms[roomId].gameState;
                 if (gs.phase === 'witch' && existing.role === 'witch') {
                     socket.emit('witchInfo', {
                         victim:     gs.nightVictim,
                         healUsed:   gs.witchHealUsed,
                         poisonUsed: gs.witchPoisonUsed,
+                    });
+                }
+
+                // Amor-Info erneut senden falls Spieler verliebt ist
+                if ((gs.loverNames || []).includes(playerName)) {
+                    const partnerName = gs.loverNames.find(n => n !== playerName);
+                    socket.emit('loverInfo', { partnerName });
+                }
+
+                // Countdown-Info senden falls aktiv
+                if (gs.countdownEnd && gs.countdownEnd > Date.now()) {
+                    socket.emit('countdownStart', {
+                        endsAt:   gs.countdownEnd,
+                        duration: gs.countdownDuration,
                     });
                 }
 
@@ -780,7 +1254,6 @@ io.on('connection', (socket) => {
         });
 
         saveRoomToDB(roomId);
-        console.log(`Spieler im Raum ${roomId}:`, rooms[roomId].gameState.players.length);
     });
 
     socket.on('disconnect', () => {
@@ -801,9 +1274,9 @@ io.on('connection', (socket) => {
 
                 rooms[roomId].players = rooms[roomId].players.filter(p => p.name !== playerName);
                 rooms[roomId].gameState.players = rooms[roomId].gameState.players.filter(p => p.name !== playerName);
-                rooms[roomId].gameState.currentVoters = rooms[roomId].gameState.currentVoters.filter(p => p.name !== playerName);
 
                 if (rooms[roomId].players.length === 0) {
+                    clearCountdown(roomId);
                     delete rooms[roomId];
                 } else {
                     updateLeaderName(roomId);
@@ -834,12 +1307,17 @@ io.on('connection', (socket) => {
         }
         if (settings.activeRoles && typeof settings.activeRoles === 'object') {
             gs.activeRoles = {
-                witch: !!settings.activeRoles.witch,
-                seer:  !!settings.activeRoles.seer,
+                witch:  !!settings.activeRoles.witch,
+                seer:   !!settings.activeRoles.seer,
+                hunter: !!settings.activeRoles.hunter,
+                amor:   !!settings.activeRoles.amor,
             };
         }
+        if (typeof settings.votingDuration === 'number' && [30, 60, 90].includes(settings.votingDuration)) {
+            gs.votingDuration = settings.votingDuration;
+        }
 
-        io.to(roomId).emit('gameStateUpdated', { gameState: gs });
+        broadcastGameState(roomId);
         saveRoomToDB(roomId);
     });
 
@@ -848,6 +1326,7 @@ io.on('connection', (socket) => {
         const player = rooms[roomId].gameState.players.find(p => p.socketId === socket.id);
         if (!player || player.name !== getLeaderName(roomId)) return;
 
+        clearCountdown(roomId);
         rooms[roomId].chatHistory = [];
         rooms[roomId].werewolfChatHistory = [];
         const gs = rooms[roomId].gameState;
@@ -859,6 +1338,7 @@ io.on('connection', (socket) => {
         gs.currentVoterIndex = 0;
         gs.votes             = {};
         gs.werewolfVotes     = {};
+        gs.hasVotedNames     = [];
         gs.isWerewolfVoting  = false;
         gs.votingRound       = 1;
         gs.afterNight        = false;
@@ -866,13 +1346,21 @@ io.on('connection', (socket) => {
         gs.votingResult      = null;
         gs.announcement      = null;
         gs.gameOver          = false;
-        gs.witchHealUsed     = false;
-        gs.witchPoisonUsed   = false;
-        gs.nightVictim       = null;
-        // activeRoles bleibt erhalten (Leader hat sie in Lobby gesetzt)
+        gs.witchHealUsed      = false;
+        gs.witchPoisonUsed    = false;
+        gs.nightVictim        = null;
+        gs.witchPoisonVictim  = null;
+        gs.loverNames         = [];
+        gs.hunterRevengeUsed  = false;
+        gs.afterHunterRevenge = null;
+        gs.countdownEnd       = null;
+        gs.countdownDuration  = 0;
+        gs.dayPhaseStart      = null;
+        // votingDuration bleibt erhalten (Leiter hat es in Lobby gesetzt)
+        // activeRoles bleibt erhalten
         gs.players.forEach(p => { p.alive = true; });
         assignRoles(roomId);
-        io.to(roomId).emit('gameStateUpdated', { gameState: gs });
+        broadcastGameState(roomId);
         saveRoomToDB(roomId);
     });
 
@@ -886,6 +1374,55 @@ io.on('connection', (socket) => {
         nextPhase(roomId);
     });
 
+    // Simultane Abstimmung (ersetzt playerVote)
+    socket.on('castVote', async (roomId, target) => {
+        if (!rooms[roomId]) await loadSingleRoomFromDB(roomId);
+        if (!rooms[roomId]) return;
+
+        const gs = rooms[roomId].gameState;
+        const player = gs.players.find(p => p.socketId === socket.id);
+        if (!player || !player.alive) return;
+
+        const isWerewolfPhase = gs.phase === 'night' && gs.isWerewolfVoting;
+        const isVotingPhase   = gs.phase === 'voting';
+        if (!isWerewolfPhase && !isVotingPhase) return;
+        if (isWerewolfPhase && player.role !== 'werewolf') return;
+
+        const voteMap  = isWerewolfPhase ? gs.werewolfVotes : gs.votes;
+        if (voteMap[player.name]) return; // Bereits abgestimmt
+
+        // Ziel validieren
+        const validTargets = isWerewolfPhase
+            ? gs.players.filter(p => p.alive && p.role !== 'werewolf').map(p => p.name).concat(['Niemanden'])
+            : gs.players.filter(p => p.alive).map(p => p.name).concat(['Niemanden']);
+        if (!validTargets.includes(target)) return;
+
+        voteMap[player.name] = target;
+        if (!gs.hasVotedNames) gs.hasVotedNames = [];
+        gs.hasVotedNames.push(player.name);
+
+        const voteType = isWerewolfPhase ? 'werewolf' : 'village';
+        await saveVoteToDB(roomId, player.name, target, voteType);
+
+        // Prüfen ob alle abgestimmt haben
+        const eligible = isWerewolfPhase
+            ? gs.players.filter(p => p.role === 'werewolf' && p.alive)
+            : gs.players.filter(p => p.alive);
+
+        const allVoted = eligible.every(p => voteMap[p.name]);
+
+        if (allVoted) {
+            if (isWerewolfPhase) {
+                await resolveWerewolfPhase(roomId);
+            } else {
+                await resolveVotingPhase(roomId);
+            }
+        } else {
+            broadcastGameState(roomId); // Nur hasVotedNames sichtbar, Ziele versteckt
+            saveRoomToDB(roomId);
+        }
+    });
+
     // Hexen-Aktion
     socket.on('witchAction', (roomId, { heal, poisonTarget }) => {
         if (!rooms[roomId]) return;
@@ -895,38 +1432,29 @@ io.on('connection', (socket) => {
         const witch = gs.players.find(p => p.socketId === socket.id && p.role === 'witch');
         if (!witch) return;
 
-        // Heiltrank anwenden
+        clearCountdown(roomId);
+
         if (heal && !gs.witchHealUsed && gs.nightVictim) {
             gs.nightVictim = null;
             gs.witchHealUsed = true;
         }
 
-        // Gifttrank anwenden
         if (poisonTarget && !gs.witchPoisonUsed) {
             const target = gs.players.find(p => p.name === poisonTarget && p.alive);
             if (target) {
-                const poisonRole = target.role;
-                killPlayer(roomId, poisonTarget);
+                // Gift wird erst bei Tagesanbruch angewendet (in applyNightResults)
+                gs.witchPoisonVictim = poisonTarget;
                 gs.witchPoisonUsed = true;
-                checkGameOver(roomId);
-                if (!gs.gameOver) {
-                    systemChat(roomId, `🧙 Die Hexe hat in der Nacht ${poisonTarget} (${roleText(poisonRole)}) vergiftet.`);
-                }
             }
         }
 
-        if (gs.gameOver) {
-            io.to(roomId).emit('gameStateUpdated', { gameState: gs });
-            saveRoomToDB(roomId);
-            return;
-        }
-
-        // Weiter zur Seherin oder zum Tag
-        advanceFromWitch(roomId);
-        io.to(roomId).emit('gameStateUpdated', { gameState: gs });
+        const newPhase = advanceFromWitch(roomId);
+        broadcastGameState(roomId);
         saveRoomToDB(roomId);
 
-        // Private Seherin-Phase beginnt (keine extra Info nötig)
+        if (!gs.gameOver && newPhase === 'seer') {
+            startCountdown(roomId, 90, () => seerTimeout(roomId));
+        }
     });
 
     // Seherin-Aktion
@@ -941,17 +1469,88 @@ io.on('connection', (socket) => {
         const targetPlayer = gs.players.find(p => p.name === target && p.alive && p.name !== seer.name);
         if (!targetPlayer) return;
 
-        // Nur für die Seherin sichtbar
+        clearCountdown(roomId);
+
         socket.emit('seerResult', { player: target, role: targetPlayer.role });
 
         applyNightResults(roomId);
-        io.to(roomId).emit('gameStateUpdated', { gameState: gs });
+        broadcastGameState(roomId);
         saveRoomToDB(roomId);
+    });
+
+    // Amor-Aktion: Liebespaar wählen
+    socket.on('amorAction', (roomId, player1, player2) => {
+        if (!rooms[roomId]) return;
+        const gs = rooms[roomId].gameState;
+        if (gs.phase !== 'amor') return;
+
+        const amor = gs.players.find(p => p.socketId === socket.id && p.role === 'amor');
+        if (!amor) return;
+
+        // Amor darf sich nicht selbst ins Paar wählen
+        if (player1 === amor.name || player2 === amor.name) return;
+        if (player1 === player2) return;
+
+        const p1 = gs.players.find(p => p.name === player1 && p.alive);
+        const p2 = gs.players.find(p => p.name === player2 && p.alive);
+        if (!p1 || !p2) return;
+
+        clearCountdown(roomId);
+
+        gs.loverNames = [player1, player2];
+
+        // Verliebte privat benachrichtigen
+        [p1, p2].forEach(lover => {
+            const partnerName = lover.name === player1 ? player2 : player1;
+            if (lover.socketId) {
+                io.to(lover.socketId).emit('loverInfo', { partnerName });
+            }
+        });
+
+        // Kurze Benachrichtigungs-Phase
+        gs.phase = 'amor_notify';
+        gs.announcement = '💘 Das Liebespaar wird benachrichtigt...';
+        broadcastGameState(roomId);
+        saveRoomToDB(roomId);
+        startCountdown(roomId, 15, () => amorNotifyTimeout(roomId));
+    });
+
+    // Jäger-Rache: nach dem Tod ein Opfer wählen
+    socket.on('hunterRevenge', (roomId, target) => {
+        if (!rooms[roomId]) return;
+        const gs = rooms[roomId].gameState;
+        if (gs.phase !== 'hunter_revenge') return;
+
+        const hunter = gs.players.find(p => p.socketId === socket.id && p.role === 'hunter');
+        if (!hunter || hunter.alive) return; // Jäger muss tot sein
+
+        clearCountdown(roomId);
+        gs.hunterRevengeUsed = true;
+
+        if (target) {
+            const targetPlayer = gs.players.find(p => p.name === target && p.alive);
+            if (targetPlayer) {
+                const targetRole = targetPlayer.role;
+                killPlayer(roomId, target);
+                systemChat(roomId, `🎯 ${hunter.name} hat ${target} (${roleText(targetRole)}) mit in den Tod gerissen!`);
+                checkGameOver(roomId);
+            }
+        }
+
+        if (gs.gameOver) {
+            broadcastGameState(roomId);
+            saveRoomToDB(roomId);
+            return;
+        }
+
+        proceedAfterHunterRevenge(roomId);
     });
 
     socket.on('returnToLobby', (roomId) => {
         if (!rooms[roomId]) return;
         if (!rooms[roomId].gameState.gameOver) return;
+
+        clearCountdown(roomId);
         rooms[roomId].chatHistory = [];
 
         const gs = rooms[roomId].gameState;
@@ -962,6 +1561,7 @@ io.on('connection', (socket) => {
         gs.currentVoterIndex = 0;
         gs.votes             = {};
         gs.werewolfVotes     = {};
+        gs.hasVotedNames     = [];
         gs.isWerewolfVoting  = false;
         gs.votingRound       = 1;
         gs.isFirstDay        = false;
@@ -969,12 +1569,19 @@ io.on('connection', (socket) => {
         gs.killedInNight     = null;
         gs.votingResult      = null;
         gs.announcement      = null;
-        gs.witchHealUsed     = false;
-        gs.witchPoisonUsed   = false;
-        gs.nightVictim       = null;
+        gs.witchHealUsed      = false;
+        gs.witchPoisonUsed    = false;
+        gs.nightVictim        = null;
+        gs.witchPoisonVictim  = null;
+        gs.loverNames         = [];
+        gs.hunterRevengeUsed  = false;
+        gs.afterHunterRevenge = null;
+        gs.countdownEnd       = null;
+        gs.countdownDuration  = 0;
+        gs.dayPhaseStart      = null;
         gs.players.forEach(p => { p.role = null; p.alive = true; });
 
-        io.to(roomId).emit('gameStateUpdated', { gameState: gs });
+        broadcastGameState(roomId);
         saveRoomToDB(roomId);
     });
 
@@ -990,9 +1597,9 @@ io.on('connection', (socket) => {
 
         rooms[roomId].players = rooms[roomId].players.filter(p => p.name !== playerName);
         rooms[roomId].gameState.players = rooms[roomId].gameState.players.filter(p => p.name !== playerName);
-        rooms[roomId].gameState.currentVoters = rooms[roomId].gameState.currentVoters.filter(p => p.name !== playerName);
 
         if (rooms[roomId].players.length === 0) {
+            clearCountdown(roomId);
             delete rooms[roomId];
         } else {
             updateLeaderName(roomId);
@@ -1018,7 +1625,6 @@ io.on('connection', (socket) => {
         rooms[roomId].werewolfChatHistory.push(msg);
         if (rooms[roomId].werewolfChatHistory.length > 100) rooms[roomId].werewolfChatHistory.shift();
 
-        // Nur an alle Werwölfe senden (lebend und tot)
         gs.players
             .filter(p => p.role === 'werewolf' && p.socketId)
             .forEach(wolf => io.to(wolf.socketId).emit('werewolfChat', msg));
@@ -1037,27 +1643,6 @@ io.on('connection', (socket) => {
         rooms[roomId].chatHistory.push(msg);
         if (rooms[roomId].chatHistory.length > 100) rooms[roomId].chatHistory.shift();
         io.to(roomId).emit('chatMessage', msg);
-    });
-
-    socket.on('playerVote', async (roomId, target) => {
-        if (!rooms[roomId]) await loadSingleRoomFromDB(roomId);
-        if (rooms[roomId]) {
-            await refreshRoomFromDB(roomId);
-            const room = rooms[roomId];
-            const voter = room.gameState.currentVoters[room.gameState.currentVoterIndex];
-
-            if (room.gameState.isWerewolfVoting) {
-                room.gameState.werewolfVotes[voter.name] = target;
-                saveVoteToDB(roomId, voter.name, target, 'werewolf');
-            } else {
-                room.gameState.votes[voter.name] = target;
-                saveVoteToDB(roomId, voter.name, target, 'village');
-            }
-
-            room.gameState.currentVoterIndex++;
-            io.to(roomId).emit('gameStateUpdated', { gameState: room.gameState });
-            saveRoomToDB(roomId);
-        }
     });
 });
 

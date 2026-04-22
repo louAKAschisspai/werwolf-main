@@ -12,11 +12,181 @@
 <body>
 
 <!-- Header -->
-<header class="app-header text-center py-3">
+<header class="app-header text-center py-3 position-relative">
     <h1 class="display-5 fw-bold mb-0">
         <span class="moon-icon">🌕</span> Werwolf
     </h1>
+    <button class="btn btn-outline-secondary btn-sm info-btn"
+            data-bs-toggle="modal" data-bs-target="#rolesInfoModal"
+            title="Rollenübersicht">
+        <i class="bi bi-info-circle-fill"></i> Rollen
+    </button>
 </header>
+
+<!-- ===================== ROLLEN-INFO MODAL ===================== -->
+<div class="modal fade" id="rolesInfoModal" tabindex="-1" aria-labelledby="rolesInfoModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-scrollable modal-lg">
+        <div class="modal-content info-modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title fw-bold" id="rolesInfoModalLabel">
+                    📖 Rollenübersicht
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Schließen"></button>
+            </div>
+            <div class="modal-body p-0">
+
+                <!-- Dorf-Team -->
+                <div class="info-team-header info-team-village">
+                    <i class="bi bi-house-fill me-2"></i>Dorf-Team — gewinnt, wenn alle Werwölfe eliminiert sind
+                </div>
+
+                <div class="info-role-card">
+                    <div class="info-role-title">
+                        <span class="info-role-badge role-villager">Dorfbewohner</span>
+                        🧑
+                    </div>
+                    <p class="info-role-desc">Keine Sonderfähigkeit. Nimmt täglich an der Abstimmung teil und versucht, die Werwölfe zu entlarven.</p>
+                    <div class="info-role-win">
+                        <i class="bi bi-trophy-fill me-1 text-success"></i>
+                        Gewinnt, wenn alle Werwölfe durch Tagesabstimmung eliminiert wurden.
+                    </div>
+                </div>
+
+                <div class="info-role-card">
+                    <div class="info-role-title">
+                        <span class="info-role-badge role-witch">Hexe</span>
+                        🧙
+                    </div>
+                    <p class="info-role-desc">
+                        Hat <strong>zwei einmalige Tränke</strong> pro Spiel:
+                    </p>
+                    <ul class="info-role-list">
+                        <li><strong>💊 Heiltrank:</strong> Rettet das Opfer der Werwölfe in dieser Nacht (das Opfer überlebt).</li>
+                        <li><strong>☠️ Gifttrank:</strong> Tötet einen beliebigen noch lebenden Spieler in dieser Nacht.</li>
+                    </ul>
+                    <p class="info-role-desc mb-1">Beide Tränke können in einer Nacht gleichzeitig eingesetzt werden. Jeder Trank ist nur einmal pro Spiel verfügbar.</p>
+                    <div class="info-role-win">
+                        <i class="bi bi-trophy-fill me-1 text-success"></i>
+                        Gewinnt mit dem Dorf, wenn alle Werwölfe eliminiert wurden.
+                    </div>
+                </div>
+
+                <div class="info-role-card">
+                    <div class="info-role-title">
+                        <span class="info-role-badge role-seer">Seherin</span>
+                        🔮
+                    </div>
+                    <p class="info-role-desc">Kann jede Nacht heimlich die <strong>Rolle eines anderen Spielers</strong> aufdecken. Nur die Seherin selbst sieht das Ergebnis.</p>
+                    <ul class="info-role-list">
+                        <li>Das Ergebnis bleibt bis zur nächsten Nacht im Aktionsbereich sichtbar.</li>
+                        <li>Die Seherin muss vorsichtig sein: Verrät sie sich, werden die Werwölfe sie gezielt angreifen.</li>
+                    </ul>
+                    <div class="info-role-win">
+                        <i class="bi bi-trophy-fill me-1 text-success"></i>
+                        Gewinnt mit dem Dorf, wenn alle Werwölfe eliminiert wurden.
+                    </div>
+                </div>
+
+                <div class="info-role-card">
+                    <div class="info-role-title">
+                        <span class="info-role-badge role-hunter">Jäger</span>
+                        🎯
+                    </div>
+                    <p class="info-role-desc">Hat eine <strong>einmalige Vergeltungsaktion</strong>: Wenn der Jäger stirbt, darf er sofort einen anderen Spieler mit in den Tod reißen.</p>
+                    <ul class="info-role-list">
+                        <li>Die Rache-Phase tritt unmittelbar nach der Todesankündigung ein.</li>
+                        <li>Der Jäger kann auch auf ein Opfer verzichten.</li>
+                        <li>60 Sekunden Zeit für die Entscheidung, sonst verfällt die Aktion.</li>
+                    </ul>
+                    <div class="info-role-win">
+                        <i class="bi bi-trophy-fill me-1 text-success"></i>
+                        Gewinnt mit dem Dorf, wenn alle Werwölfe eliminiert wurden.
+                    </div>
+                </div>
+
+                <!-- Liebespaar-Team -->
+                <div class="info-team-header" style="background-color:rgba(245,158,11,0.12);color:#fde68a;border-top:1px solid var(--ww-border);border-bottom:1px solid rgba(245,158,11,0.3);">
+                    <i class="bi bi-heart-fill me-2"></i>Liebespaar — gewinnt, wenn beide bis zum Ende überleben
+                </div>
+
+                <div class="info-role-card">
+                    <div class="info-role-title">
+                        <span class="info-role-badge role-amor">Amor</span>
+                        💘
+                    </div>
+                    <p class="info-role-desc">Agiert <strong>vor der ersten Nacht</strong> und wählt zwei Spieler als Liebespaar. Amor selbst kann kein Teil des Paares sein.</p>
+                    <ul class="info-role-list">
+                        <li>Die Verliebten werden privat über ihren Partner informiert.</li>
+                        <li>Nur das Liebespaar sieht das 💕-Symbol bei den Spielernamen.</li>
+                        <li>Wenn einer der Verliebten stirbt, stirbt der andere sofort vor Liebeskummer.</li>
+                        <li>Ist ein Werwolf Teil des Paares, wechselt sein Ziel: Überleben statt Töten.</li>
+                        <li>90 Sekunden Zeit für die Wahl, danach kein Paar.</li>
+                    </ul>
+                    <div class="info-role-win">
+                        <i class="bi bi-trophy-fill me-1 text-warning"></i>
+                        Gewinnt mit dem Dorf, wenn alle Werwölfe eliminiert wurden — <strong>außer</strong> das Liebespaar gewinnt als Paar.
+                    </div>
+                </div>
+
+                <div class="info-role-card">
+                    <div class="info-role-title">
+                        <span class="info-role-badge" style="background:#f59e0b;color:#000;">💕 Liebespaar</span>
+                    </div>
+                    <p class="info-role-desc">Von Amor auserwählt. Das Paar verfolgt ein gemeinsames Ziel: <strong>beide müssen das Spiel überleben</strong>.</p>
+                    <ul class="info-role-list">
+                        <li>Stirbt ein Partner, stirbt der andere sofort.</li>
+                        <li>Ist ein Verliebter ein Werwolf, zählt er nicht mehr zum Werwolf-Team.</li>
+                        <li>Das Paar gewinnt, wenn sie <em>als letzte übrig bleiben</em> oder wenn das Spiel mit beiden noch am Leben endet.</li>
+                    </ul>
+                    <div class="info-role-win">
+                        <i class="bi bi-heart-fill me-1 text-warning"></i>
+                        Gewinnt, wenn beide Verliebten das Spielende erleben.
+                    </div>
+                </div>
+
+                <!-- Werwolf-Team -->
+                <div class="info-team-header info-team-wolves">
+                    <i class="bi bi-moon-stars-fill me-2"></i>Werwolf-Team — gewinnt, wenn Werwölfe die Mehrheit haben
+                </div>
+
+                <div class="info-role-card">
+                    <div class="info-role-title">
+                        <span class="info-role-badge role-werewolf">Werwolf</span>
+                        🐺
+                    </div>
+                    <p class="info-role-desc">Kennt die anderen Werwölfe. Stimmt jede Nacht gemeinsam ab, wen sie töten wollen. Versucht tagsüber unverdächtig zu wirken.</p>
+                    <ul class="info-role-list">
+                        <li>Nutzt den <strong>geheimen Werwolf-Chat</strong> in der Nacht, um sich abzustimmen.</li>
+                        <li>Tote Werwölfe können den Chat nur noch lesen, nicht mehr schreiben.</li>
+                    </ul>
+                    <div class="info-role-win">
+                        <i class="bi bi-trophy-fill me-1 text-danger"></i>
+                        Gewinnt, wenn die Werwölfe genauso viele oder mehr Spieler stellen wie das Dorf.
+                    </div>
+                </div>
+
+                <!-- Spielablauf -->
+                <div class="info-team-header info-team-rules">
+                    <i class="bi bi-list-ol me-2"></i>Spielablauf
+                </div>
+                <div class="info-role-card">
+                    <ol class="info-role-list mb-0">
+                        <li><strong>Nacht:</strong> Werwölfe wählen ein Opfer (geheimer Chat + Abstimmung).</li>
+                        <li><strong>Hexe</strong> (falls aktiv): Kann das Opfer retten oder jemanden vergiften.</li>
+                        <li><strong>Seherin</strong> (falls aktiv): Schaut sich heimlich eine Rolle an.</li>
+                        <li><strong>Tag:</strong> Alle beraten sich im Chat, dann stimmt jeder ab, wen sie verdächtigen.</li>
+                        <li>Der Spieler mit den meisten Stimmen wird eliminiert – seine Rolle wird für alle aufgedeckt.</li>
+                        <li>Danach beginnt die nächste Nacht.</li>
+                    </ol>
+                </div>
+
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Schließen</button>
+            </div>
+        </div>
+    </div>
+</div>
 
 <!-- ===================== JOIN ROOM ===================== -->
 <div id="joinRoom" class="container mt-5" style="display: block;">
@@ -89,12 +259,45 @@
                             🧙 Hexe &mdash; hat Heil- &amp; Gifttrank (je einmal pro Spiel)
                         </label>
                     </div>
-                    <div class="form-check">
+                    <div class="form-check mb-2">
                         <input class="form-check-input" type="checkbox" id="roleSeer">
                         <label class="form-check-label" for="roleSeer">
                             🔮 Seherin &mdash; kann jede Nacht eine Rolle aufdecken
                         </label>
                     </div>
+                    <div class="form-check mb-2">
+                        <input class="form-check-input" type="checkbox" id="roleHunter">
+                        <label class="form-check-label" for="roleHunter">
+                            🎯 Jäger &mdash; reißt beim Tod ein Opfer mit
+                        </label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="roleAmor">
+                        <label class="form-check-label" for="roleAmor">
+                            💘 Amor &mdash; verliebt in der ersten Nacht zwei Spieler
+                        </label>
+                    </div>
+
+                    <hr class="border-secondary my-3">
+
+                    <p class="fw-semibold mb-2">
+                        <i class="bi bi-alarm-fill text-warning"></i> Abstimmungszeit (Tag)
+                    </p>
+                    <div class="d-flex gap-3">
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="votingDuration" id="dur30" value="30">
+                            <label class="form-check-label" for="dur30">30 s</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="votingDuration" id="dur60" value="60" checked>
+                            <label class="form-check-label" for="dur60">60 s</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="votingDuration" id="dur90" value="90">
+                            <label class="form-check-label" for="dur90">90 s</label>
+                        </div>
+                    </div>
+                    <p class="text-muted small mt-1 mb-0">Werwölfe: immer 60 s &bull; Hexe/Seherin: immer 90 s</p>
                 </div>
             </div>
 
@@ -106,7 +309,12 @@
                         <span class="text-muted">Werwölfe:</span>
                         <strong id="werewolfCountDisplay">1</strong>
                     </div>
-                    <div id="activeRolesDisplay" class="text-muted small"></div>
+                    <div id="activeRolesDisplay" class="text-muted small mb-2"></div>
+                    <div class="d-flex align-items-center gap-2">
+                        <i class="bi bi-alarm-fill text-warning"></i>
+                        <span class="text-muted small">Abstimmungszeit:</span>
+                        <span id="votingDurationDisplay" class="small fw-semibold">60 s</span>
+                    </div>
                 </div>
             </div>
 
@@ -156,9 +364,21 @@
         <div class="col-12 col-md-10 col-lg-8">
 
             <!-- Status-Zeile -->
-            <div class="d-flex gap-2 mb-3 flex-wrap">
+            <div class="d-flex gap-2 mb-2 flex-wrap align-items-center">
                 <span id="phase" class="badge fs-6 phase-badge px-3 py-2"></span>
                 <span id="round" class="badge bg-secondary fs-6 px-3 py-2"></span>
+            </div>
+
+            <!-- Countdown-Widget -->
+            <div id="countdownWidget" class="countdown-widget d-none mb-3">
+                <div class="d-flex align-items-center gap-2 mb-1">
+                    <i class="bi bi-alarm-fill"></i>
+                    <span id="countdownLabel" class="countdown-label">Abstimmung endet in</span>
+                    <span id="countdownSeconds" class="countdown-time">--</span>
+                </div>
+                <div class="countdown-bar-wrap">
+                    <div id="countdownBar" class="countdown-bar-fill"></div>
+                </div>
             </div>
 
             <!-- Ankündigung -->

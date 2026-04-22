@@ -1,6 +1,16 @@
-// Lokaler Zustand für Hexen-Aktion (wird durch witchInfo-Event zurückgesetzt)
-let _witchHealToggled   = false;
+// Lokaler Zustand für Hexen-Aktion
+let _witchHealToggled    = false;
 let _witchPoisonSelected = null;
+
+// Lokaler Zustand für Amor-Aktion
+let _amorSelected = [];
+
+// Eigenes Abstimmungsziel (lokal, nicht aus gameState – Ziele werden serverseitig versteckt)
+// var statt let → global zugänglich aus socket.js
+var _myVoteTarget = null;
+
+// Countdown-Intervall Handle
+let _countdownInterval = null;
 
 function updateUI() {
     if (!socket || !currentRoomId) {
@@ -36,6 +46,94 @@ function myRole() {
     return me ? me.role : null;
 }
 
+function amIAlive() {
+    const me = gameState.players.find(p => p.name === currentPlayerName);
+    return me ? me.alive : false;
+}
+
+
+// ---------------------------------------------------------------
+// Countdown-Anzeige
+// ---------------------------------------------------------------
+function startCountdownDisplay() {
+    if (_countdownInterval) return;
+    _countdownInterval = setInterval(tickCountdown, 500);
+}
+
+function tickCountdown() {
+    const widget   = document.getElementById('countdownWidget');
+    const secEl    = document.getElementById('countdownSeconds');
+    const barEl    = document.getElementById('countdownBar');
+    const labelEl  = document.getElementById('countdownLabel');
+
+    const endsAt   = gameState.countdownEnd;
+    const duration = gameState.countdownDuration || 1;
+
+    if (!endsAt || !widget) {
+        if (widget) widget.classList.add('d-none');
+        clearInterval(_countdownInterval);
+        _countdownInterval = null;
+        return;
+    }
+
+    const remaining = Math.ceil((endsAt - Date.now()) / 1000);
+    const isUrgent  = remaining <= 10;
+
+    if (remaining <= 0) {
+        widget.classList.add('d-none');
+        clearInterval(_countdownInterval);
+        _countdownInterval = null;
+        return;
+    }
+
+    widget.classList.remove('d-none');
+    secEl.textContent = remaining + 's';
+    secEl.className   = 'countdown-time' + (isUrgent ? ' urgent' : '');
+
+    const pct = Math.max(0, Math.min(100, (remaining / duration) * 100));
+    barEl.style.width = pct + '%';
+    barEl.className   = 'countdown-bar-fill' + (isUrgent ? ' urgent' : '');
+
+    // Label je nach Phase anpassen
+    if (labelEl) {
+        if (gameState.phase === 'day' && gameState.afterNight) {
+            labelEl.textContent = 'Diskussion endet in';
+        } else if (gameState.phase === 'witch' || gameState.phase === 'seer' ||
+                   gameState.phase === 'amor'  || gameState.phase === 'amor_notify') {
+            labelEl.textContent = 'Nächste Phase in';
+        } else if (gameState.phase === 'result') {
+            labelEl.textContent = 'Nacht beginnt in';
+        } else if (gameState.phase === 'game_over_results') {
+            labelEl.textContent = 'Spiel wird beendet in';
+        } else if (gameState.phase === 'hunter_revenge') {
+            labelEl.textContent = 'Jäger entscheidet in';
+        } else {
+            labelEl.textContent = 'Abstimmung endet in';
+        }
+    }
+
+    // "Weiter"-Button für Game Over Results (kein Lockout, da Timer selbst nur 15s)
+    const gameOverBtn = document.getElementById('gameOverNextPhaseBtn');
+    if (gameOverBtn && gameState.phase === 'game_over_results') {
+        gameOverBtn.disabled = false;
+        gameOverBtn.innerHTML = '<i class="bi bi-trophy-fill me-1"></i> Ergebnis anzeigen';
+    }
+
+    // "Abstimmung starten"-Button für Leiter nach 15s freischalten
+    const dayBtn = document.getElementById('dayNextPhaseBtn');
+    if (dayBtn && gameState.phase === 'day' && gameState.afterNight) {
+        const buttonActiveAt = endsAt - (duration - 15) * 1000;
+        const isLocked = Date.now() < buttonActiveAt;
+        dayBtn.disabled = isLocked;
+        if (isLocked) {
+            const lockSec = Math.ceil((buttonActiveAt - Date.now()) / 1000);
+            dayBtn.innerHTML = `<i class="bi bi-lock-fill me-1"></i> Abstimmung in ${lockSec}s`;
+        } else {
+            dayBtn.innerHTML = '<i class="bi bi-arrow-right-circle-fill me-1"></i> Abstimmung starten';
+        }
+    }
+}
+
 
 // ---------------------------------------------------------------
 // End Screen
@@ -43,10 +141,15 @@ function myRole() {
 function renderEndScreen() {
     const isWerewolfWin = gameState.announcement && gameState.announcement.includes('Werwölfe');
     const isVillageWin  = gameState.announcement && gameState.announcement.includes('Dorfbewohner');
+    const isLoverWin    = gameState.announcement && gameState.announcement.includes('Liebespaar');
 
-    document.getElementById('endIcon').textContent  = isWerewolfWin ? '🐺' : isVillageWin ? '🎉' : '🏁';
+    document.getElementById('endIcon').textContent  = isWerewolfWin ? '🐺'
+                                                    : isVillageWin  ? '🎉'
+                                                    : isLoverWin    ? '💕'
+                                                    : '🏁';
     document.getElementById('endTitle').textContent = isWerewolfWin ? 'Werwölfe gewinnen!'
                                                     : isVillageWin  ? 'Dorfbewohner gewinnen!'
+                                                    : isLoverWin    ? 'Das Liebespaar gewinnt!'
                                                     : 'Spiel beendet';
 
     const revealBox = document.getElementById('endRoleReveal');
@@ -54,26 +157,30 @@ function renderEndScreen() {
 
     if (!gameState.players || gameState.players.length === 0) return;
 
+    const loverNames = gameState.loverNames || [];
     const wolves    = gameState.players.filter(p => p.role === 'werewolf');
-    // Village team: everyone who isn't a werewolf
     const villagers = gameState.players.filter(p => p.role !== 'werewolf');
-    const winners   = isWerewolfWin ? wolves : isVillageWin ? villagers : [];
+    const winners   = isLoverWin    ? gameState.players.filter(p => loverNames.includes(p.name))
+                    : isWerewolfWin ? wolves
+                    : isVillageWin  ? villagers
+                    : [];
 
-    // Gewinner-Block
     if (winners.length > 0) {
         const winnerSection = document.createElement('div');
         winnerSection.className = 'mb-4';
 
         const winnerLabel = document.createElement('p');
         winnerLabel.className = 'text-muted small mb-2 text-uppercase fw-semibold';
-        winnerLabel.textContent = isWerewolfWin ? '🏆 Gewinner — Die Werwölfe' : '🏆 Gewinner — Das Dorf';
+        winnerLabel.textContent = isLoverWin    ? '🏆 Gewinner — Das Liebespaar'
+                                : isWerewolfWin ? '🏆 Gewinner — Die Werwölfe'
+                                : '🏆 Gewinner — Das Dorf';
         winnerSection.appendChild(winnerLabel);
 
         const winnerList = document.createElement('div');
         winnerList.className = 'd-flex flex-wrap gap-2 justify-content-center';
         winners.forEach(p => {
             const chip = document.createElement('span');
-            chip.className = 'badge px-3 py-2 fs-6 ' + (isWerewolfWin ? 'bg-danger' : 'bg-success');
+            chip.className = 'badge px-3 py-2 fs-6 ' + (isWerewolfWin ? 'bg-danger' : isLoverWin ? 'bg-warning text-dark' : 'bg-success');
             const crown = p.name === gameState.leaderName ? '👑 ' : '';
             chip.textContent = crown + p.name;
             winnerList.appendChild(chip);
@@ -107,20 +214,28 @@ function renderEndScreen() {
 
 
 // ---------------------------------------------------------------
-// Game Header (Phase, Runde, Ankündigung, aktueller Voter)
+// Game Header (Phase, Runde, Ankündigung)
 // ---------------------------------------------------------------
 function renderGameHeader() {
     const phaseEl = document.getElementById('phase');
     const roundEl = document.getElementById('round');
 
-    const isNightLike = (gameState.phase === 'night' || gameState.phase === 'witch' || gameState.phase === 'seer');
+    const isNightLike = (gameState.phase === 'night' || gameState.phase === 'witch' ||
+                         gameState.phase === 'seer'  || gameState.phase === 'amor' ||
+                         gameState.phase === 'amor_notify');
 
     if (gameState.gameOver) {
         phaseEl.textContent = '☠️ Spiel beendet';
         phaseEl.className = 'badge fs-6 phase-badge gameover-phase px-3 py-2';
+    } else if (gameState.phase === 'game_over_results') {
+        phaseEl.textContent = '📋 Ergebnisse';
+        phaseEl.className = 'badge fs-6 phase-badge gameover-phase px-3 py-2';
     } else if (isNightLike) {
         phaseEl.textContent = '🌙 Nacht';
         phaseEl.className = 'badge fs-6 phase-badge night-phase px-3 py-2';
+    } else if (gameState.phase === 'result' || gameState.phase === 'hunter_revenge') {
+        phaseEl.textContent = '⚖️ Ergebnis';
+        phaseEl.className = 'badge fs-6 phase-badge day-phase px-3 py-2';
     } else {
         phaseEl.textContent = '☀️ Tag';
         phaseEl.className = 'badge fs-6 phase-badge day-phase px-3 py-2';
@@ -138,26 +253,16 @@ function renderGameHeader() {
         announcementBox.classList.add('d-none');
     }
 
-    // Aktueller Voter (nur in Nacht/Voting-Phase)
-    const voterBox = document.getElementById('currentVoterBox');
-    const voterEl = document.getElementById('currentVoter');
-    const amIWolf = gameState.players.find(p => p.name === currentPlayerName && p.role === 'werewolf');
+    // currentVoterBox ausblenden (wird nicht mehr genutzt)
+    document.getElementById('currentVoterBox').classList.add('d-none');
 
-    if ((gameState.phase === 'night' || gameState.phase === 'voting') &&
-        gameState.currentVoterIndex < gameState.currentVoters.length) {
-        const voter = gameState.currentVoters[gameState.currentVoterIndex];
-        if (gameState.phase === 'night' && gameState.isWerewolfVoting) {
-            if (amIWolf) {
-                voterEl.innerHTML = '🐺 Wer ist dran: <strong>' + voter.name + '</strong>';
-            } else {
-                voterEl.textContent = '🌙 Werwölfe stimmen ab...';
-            }
-        } else {
-            voterEl.innerHTML = 'Wer ist dran: <strong>' + voter.name + '</strong>';
-        }
-        voterBox.classList.remove('d-none');
+    // Countdown-Anzeige aktualisieren
+    const widget = document.getElementById('countdownWidget');
+    if (gameState.countdownEnd && gameState.countdownEnd > Date.now()) {
+        widget.classList.remove('d-none');
+        startCountdownDisplay();
     } else {
-        voterBox.classList.add('d-none');
+        widget.classList.add('d-none');
     }
 }
 
@@ -179,7 +284,6 @@ function renderPlayers() {
         const card = document.createElement('div');
         card.className = 'player-card' + (player.alive ? '' : ' dead');
 
-        // Icon
         const icon = document.createElement('span');
         if (!player.alive) {
             icon.textContent = '💀';
@@ -194,16 +298,17 @@ function renderPlayers() {
             icon.textContent = '🧑';
         }
 
-        // Name (mit Krone für den Leiter)
         const nameEl = document.createElement('span');
         nameEl.className = 'player-name';
-        nameEl.textContent = (player.name === gameState.leaderName ? '👑 ' : '') + player.name;
+        // Liebessymbol nur für die Verliebten selbst sichtbar
+        const showHeart = loverPartnerName &&
+            (player.name === currentPlayerName || player.name === loverPartnerName);
+        nameEl.textContent = (player.name === gameState.leaderName ? '👑 ' : '') +
+            player.name + (showHeart ? ' 💕' : '');
 
-        // Rollen-Badge
         const badge = document.createElement('span');
         badge.className = 'role-badge';
         if (!player.alive) {
-            // Rolle aufdecken sobald der Spieler tot ist
             badge.textContent = '💀 ' + roleShortName(player.role);
             badge.classList.add(roleBadgeClass(player.role));
         } else if (player.name === myName) {
@@ -240,6 +345,24 @@ function renderActions() {
 
     if (gameState.phase === 'lobby') return;
 
+    if (gameState.phase === 'amor') {
+        renderAmorActions(container);
+        return;
+    }
+
+    if (gameState.phase === 'amor_notify') {
+        const msg = document.createElement('div');
+        msg.className = 'alert alert-warning py-2 mb-0 text-center';
+        if (loverPartnerName) {
+            msg.innerHTML = `💕 Du und <strong>${escapeHtml(loverPartnerName)}</strong> seid verliebt!<br>
+                <small class="text-muted">Ihr gewinnt nur, wenn ihr beide bis zum Ende überlebt.</small>`;
+        } else {
+            msg.textContent = '💘 Das Liebespaar wird benachrichtigt...';
+        }
+        container.appendChild(msg);
+        return;
+    }
+
     if (gameState.phase === 'witch') {
         renderWitchActions(container);
         return;
@@ -250,13 +373,52 @@ function renderActions() {
         return;
     }
 
+    if (gameState.phase === 'night' && gameState.isWerewolfVoting) {
+        renderWerewolfVotingActions(container);
+        return;
+    }
+
+    if (gameState.phase === 'voting') {
+        renderDayVotingActions(container);
+        return;
+    }
+
+    if (gameState.phase === 'hunter_revenge') {
+        renderHunterRevengeActions(container);
+        return;
+    }
+
+    if (gameState.phase === 'result') {
+        const msg = document.createElement('p');
+        msg.className = 'text-muted mb-0 text-center';
+        msg.textContent = '🌙 Die Nacht beginnt gleich...';
+        container.appendChild(msg);
+        return;
+    }
+
+    if (gameState.phase === 'game_over_results') {
+        const msg = document.createElement('div');
+        msg.className = 'alert alert-success py-3 mb-3 text-center';
+        msg.innerHTML = '<i class="bi bi-confetti me-2"></i>Die Ergebnisse werden offengelegt...<i class="bi bi-confetti ms-2"></i>';
+        container.appendChild(msg);
+
+        if (amILeader()) {
+            const btn = document.createElement('button');
+            btn.id = 'gameOverNextPhaseBtn';
+            btn.className = 'btn btn-primary mt-1';
+            btn.onclick = nextPhaseServer;
+            btn.innerHTML = '<i class="bi bi-trophy-fill me-1"></i> Ergebnis anzeigen';
+            container.appendChild(btn);
+        }
+        return;
+    }
+
     if (gameState.phase === 'day') {
         const msg = gameState.isFirstDay
             ? '<p>Alle schlafen noch. Der Leiter startet die erste Runde.</p>'
-            : '<p>Tag-Phase – Die Dorfbewohner beraten sich. Nach der Abstimmung geht es weiter.</p>';
+            : '<p>Tag-Phase – Die Dorfbewohner beraten sich. Nach der Diskussion startet der Leiter die Abstimmung.</p>';
         container.innerHTML = msg;
 
-        // Seherin: letzte Inspektion anzeigen
         if (myRole() === 'seer' && seerRevealResult) {
             const info = document.createElement('div');
             info.className = 'alert alert-info py-2 mb-2';
@@ -267,34 +429,43 @@ function renderActions() {
         if (amILeader()) container.appendChild(makeNextPhaseBtn());
         return;
     }
+}
 
-    // Alle Spieler haben abgestimmt
-    if (gameState.currentVoterIndex >= gameState.currentVoters.length) {
-        container.innerHTML = '<p>Alle haben abgestimmt.</p>';
-        if (amILeader()) container.appendChild(makeNextPhaseBtn());
+
+// ---------------------------------------------------------------
+// Werwolf-Abstimmung (simultan, alle Wölfe gleichzeitig)
+// ---------------------------------------------------------------
+function renderWerewolfVotingActions(container) {
+    const amIWolf = myRole() === 'werewolf';
+
+    if (!amIWolf) {
+        const msg = document.createElement('p');
+        msg.className = 'text-muted mb-0';
+        msg.textContent = '🌙 Die Werwölfe stimmen ab...';
+        container.appendChild(msg);
         return;
     }
 
-    const voter = gameState.currentVoters[gameState.currentVoterIndex];
-    const amIWolf = gameState.players.find(p => p.name === currentPlayerName && p.role === 'werewolf');
+    // Ich bin ein Wolf: zeige Abstimmungs-UI
+    const title = document.createElement('p');
+    title.className = 'fw-semibold mb-2';
+    title.textContent = '🐺 Wen wollt ihr fressen? (Nur ihr Wölfe seht das)';
+    container.appendChild(title);
 
-    if (voter && voter.name === currentPlayerName) {
-        const label = document.createElement('p');
-        label.className = 'fw-semibold mb-2';
-        label.textContent = gameState.isWerewolfVoting
-            ? '🐺 Wen wollt ihr fressen?'
-            : '🗳️ Wen verdächtigst du?';
-        container.appendChild(label);
-
+    if (_myVoteTarget) {
+        // Ich habe schon abgestimmt
+        const confirmed = document.createElement('div');
+        confirmed.className = 'alert alert-success py-2 mb-2';
+        confirmed.innerHTML = `✅ Du hast für <strong>${escapeHtml(_myVoteTarget)}</strong> gestimmt. Warte auf die anderen...`;
+        container.appendChild(confirmed);
+    } else {
+        // Abstimmungs-Buttons
         const grid = document.createElement('div');
-        grid.className = 'd-flex flex-wrap gap-2';
+        grid.className = 'd-flex flex-wrap gap-2 mb-2';
 
-        let targets = [];
-        if (gameState.isWerewolfVoting) {
-            targets = gameState.players.filter(p => p.alive && p.role !== 'werewolf').map(p => p.name);
-        } else {
-            targets = gameState.players.filter(p => p.alive).map(p => p.name);
-        }
+        const targets = gameState.players
+            .filter(p => p.alive && p.role !== 'werewolf')
+            .map(p => p.name);
         targets.push('Niemanden');
 
         targets.forEach(target => {
@@ -303,23 +474,202 @@ function renderActions() {
                 ? 'btn btn-outline-secondary vote-btn'
                 : 'btn btn-outline-danger vote-btn';
             btn.textContent = target;
-            btn.onclick = () => sendVote(target);
+            btn.onclick = () => {
+                _myVoteTarget = target;
+                castVote(target);
+                renderActions();
+            };
             grid.appendChild(btn);
         });
-
         container.appendChild(grid);
-    } else {
-        const waiting = document.createElement('p');
-        waiting.className = 'text-muted mb-0';
-        if (gameState.phase === 'night' && gameState.isWerewolfVoting) {
-            waiting.textContent = amIWolf
-                ? '🐺 Warten auf ' + (voter ? voter.name : 'Spieler') + '...'
-                : '🌙 Werwölfe stimmen ab...';
-        } else {
-            waiting.textContent = '⏳ Warten auf ' + (voter ? voter.name : 'Spieler') + '...';
-        }
-        container.appendChild(waiting);
     }
+
+    // Zeige wer von den Wölfen schon abgestimmt hat
+    renderVotedProgress(container, 'wolf');
+}
+
+
+// ---------------------------------------------------------------
+// Tages-Abstimmung (simultan, alle lebenden Spieler)
+// ---------------------------------------------------------------
+function renderDayVotingActions(container) {
+    const alive = amIAlive();
+
+    if (!alive) {
+        const msg = document.createElement('p');
+        msg.className = 'text-muted mb-0';
+        msg.textContent = '💀 Du bist tot und kannst nicht mehr abstimmen.';
+        container.appendChild(msg);
+        renderVotedProgress(container, 'village');
+        return;
+    }
+
+    const title = document.createElement('p');
+    title.className = 'fw-semibold mb-2';
+    title.textContent = '🗳️ Wen verdächtigst du?';
+    container.appendChild(title);
+
+    if (_myVoteTarget) {
+        // Ich habe schon abgestimmt
+        const confirmed = document.createElement('div');
+        confirmed.className = 'alert alert-success py-2 mb-2';
+        confirmed.innerHTML = `✅ Du hast für <strong>${escapeHtml(_myVoteTarget)}</strong> gestimmt. Warte auf den Countdown...`;
+        container.appendChild(confirmed);
+    } else {
+        const grid = document.createElement('div');
+        grid.className = 'd-flex flex-wrap gap-2 mb-2';
+
+        const targets = gameState.players.filter(p => p.alive).map(p => p.name);
+        targets.push('Niemanden');
+
+        targets.forEach(target => {
+            const btn = document.createElement('button');
+            btn.className = target === 'Niemanden'
+                ? 'btn btn-outline-secondary vote-btn'
+                : 'btn btn-outline-danger vote-btn';
+            btn.textContent = target;
+            btn.onclick = () => {
+                _myVoteTarget = target;
+                castVote(target);
+                renderActions();
+            };
+            grid.appendChild(btn);
+        });
+        container.appendChild(grid);
+    }
+
+    // Zeige wer schon abgestimmt hat
+    renderVotedProgress(container, 'village');
+}
+
+
+// ---------------------------------------------------------------
+// Fortschritt: Wer hat schon abgestimmt (ohne Ziele)
+// ---------------------------------------------------------------
+function renderVotedProgress(container, type) {
+    const hasVoted = gameState.hasVotedNames || [];
+    const eligible = type === 'wolf'
+        ? gameState.players.filter(p => p.role === 'werewolf' && p.alive)
+        : gameState.players.filter(p => p.alive);
+
+    if (eligible.length === 0) return;
+
+    const div = document.createElement('div');
+    div.className = 'voted-progress mt-2';
+    div.innerHTML = `<span class="text-muted">${hasVoted.length}/${eligible.length} abgestimmt:</span> `;
+
+    if (hasVoted.length === 0) {
+        div.innerHTML += '<span class="text-muted">–</span>';
+    } else {
+        hasVoted.forEach(name => {
+            const chip = document.createElement('span');
+            chip.className = 'voted-chip';
+            chip.innerHTML = '✓ ' + escapeHtml(name);
+            div.appendChild(chip);
+        });
+    }
+
+    container.appendChild(div);
+}
+
+
+// ---------------------------------------------------------------
+// Amor-Aktionen
+// ---------------------------------------------------------------
+function renderAmorActions(container) {
+    const iAmAmor = myRole() === 'amor';
+
+    if (!iAmAmor) {
+        const msg = document.createElement('p');
+        msg.className = 'text-muted mb-0';
+        msg.textContent = '💘 Amor verliebt zwei Personen...';
+        container.appendChild(msg);
+        if (amILeader()) container.appendChild(makeSkipBtn());
+        return;
+    }
+
+    const title = document.createElement('p');
+    title.className = 'fw-semibold mb-2';
+    title.textContent = '💘 Du bist Amor! Wähle 2 Spieler als Liebespaar (nicht dich selbst):';
+    container.appendChild(title);
+
+    if (_amorSelected.length > 0) {
+        const info = document.createElement('div');
+        info.className = 'alert alert-warning py-2 mb-2';
+        info.innerHTML = 'Ausgewählt: ' + _amorSelected.map(n => `<strong>${escapeHtml(n)}</strong>`).join(' & ');
+        container.appendChild(info);
+    }
+
+    const grid = document.createElement('div');
+    grid.className = 'd-flex flex-wrap gap-2 mb-2';
+
+    gameState.players.filter(p => p.alive && p.name !== currentPlayerName).forEach(p => {
+        const isSelected = _amorSelected.includes(p.name);
+        const btn = document.createElement('button');
+        btn.className = 'btn ' + (isSelected ? 'btn-warning' : 'btn-outline-warning') + ' vote-btn';
+        btn.textContent = isSelected ? `💕 ${p.name}` : p.name;
+        btn.onclick = () => {
+            if (isSelected) {
+                _amorSelected = _amorSelected.filter(n => n !== p.name);
+            } else if (_amorSelected.length < 2) {
+                _amorSelected = [..._amorSelected, p.name];
+            }
+            renderActions();
+        };
+        grid.appendChild(btn);
+    });
+    container.appendChild(grid);
+
+    const confirmBtn = document.createElement('button');
+    confirmBtn.className = 'btn btn-warning mt-1';
+    confirmBtn.innerHTML = '<i class="bi bi-heart-fill me-1"></i> Liebespaar bestätigen';
+    confirmBtn.disabled = _amorSelected.length !== 2;
+    confirmBtn.onclick = () => {
+        sendAmorAction(_amorSelected[0], _amorSelected[1]);
+        _amorSelected = [];
+    };
+    container.appendChild(confirmBtn);
+}
+
+
+// ---------------------------------------------------------------
+// Jäger-Rache
+// ---------------------------------------------------------------
+function renderHunterRevengeActions(container) {
+    const iAmHunter = myRole() === 'hunter';
+
+    if (!iAmHunter || amIAlive()) {
+        const msg = document.createElement('p');
+        msg.className = 'text-muted mb-0';
+        msg.textContent = '🎯 Der Jäger wählt sein letztes Opfer...';
+        container.appendChild(msg);
+        return;
+    }
+
+    const title = document.createElement('p');
+    title.className = 'fw-semibold mb-2';
+    title.textContent = '🎯 Du bist gestorben! Wähle ein letztes Opfer (oder verzichte):';
+    container.appendChild(title);
+
+    const grid = document.createElement('div');
+    grid.className = 'd-flex flex-wrap gap-2 mb-2';
+
+    gameState.players.filter(p => p.alive).forEach(p => {
+        const btn = document.createElement('button');
+        btn.className = 'btn btn-outline-danger vote-btn';
+        btn.textContent = p.name;
+        btn.onclick = () => {
+            sendHunterRevenge(p.name);
+        };
+        grid.appendChild(btn);
+    });
+    container.appendChild(grid);
+
+    const skipBtn = document.createElement('button');
+    skipBtn.className = 'btn btn-outline-secondary btn-sm mt-1';
+    skipBtn.textContent = 'Kein Opfer wählen';
+    skipBtn.onclick = () => sendHunterRevenge(null);
+    container.appendChild(skipBtn);
 }
 
 
@@ -334,20 +684,15 @@ function renderWitchActions(container) {
         msg.className = 'text-muted mb-0';
         msg.textContent = '🧙 Die Hexe entscheidet...';
         container.appendChild(msg);
-        if (amILeader()) {
-            const skip = makeSkipBtn();
-            container.appendChild(skip);
-        }
+        if (amILeader()) container.appendChild(makeSkipBtn());
         return;
     }
 
-    // --- Ich bin die Hexe ---
     const title = document.createElement('p');
     title.className = 'fw-semibold mb-3';
     title.textContent = '🧙 Du bist die Hexe! Entscheide deine Aktionen:';
     container.appendChild(title);
 
-    // Info: Opfer der Werwölfe
     const victimInfo = document.createElement('div');
     victimInfo.className = 'alert alert-info py-2 mb-3';
     if (witchNightVictim) {
@@ -357,7 +702,7 @@ function renderWitchActions(container) {
     }
     container.appendChild(victimInfo);
 
-    // --- Heiltrank ---
+    // Heiltrank
     if (!gameState.witchHealUsed && witchNightVictim) {
         const healSection = document.createElement('div');
         healSection.className = 'mb-3';
@@ -374,7 +719,7 @@ function renderWitchActions(container) {
             : `💊 ${escapeHtml(witchNightVictim)} retten`;
         healBtn.onclick = () => {
             _witchHealToggled = !_witchHealToggled;
-            renderActions(); // re-render only actions
+            renderActions();
         };
         healSection.appendChild(healBtn);
         container.appendChild(healSection);
@@ -385,7 +730,7 @@ function renderWitchActions(container) {
         container.appendChild(used);
     }
 
-    // --- Gifttrank ---
+    // Gifttrank
     if (!gameState.witchPoisonUsed) {
         const poisonSection = document.createElement('div');
         poisonSection.className = 'mb-3';
@@ -398,8 +743,7 @@ function renderWitchActions(container) {
         const poisonGrid = document.createElement('div');
         poisonGrid.className = 'd-flex flex-wrap gap-2';
 
-        const targets = gameState.players.filter(p => p.alive && p.name !== currentPlayerName);
-        targets.forEach(p => {
+        gameState.players.filter(p => p.alive && p.name !== currentPlayerName).forEach(p => {
             const btn = document.createElement('button');
             const selected = _witchPoisonSelected === p.name;
             btn.className = 'btn ' + (selected ? 'btn-danger' : 'btn-outline-danger') + ' vote-btn btn-sm';
@@ -420,13 +764,12 @@ function renderWitchActions(container) {
         container.appendChild(used);
     }
 
-    // --- Bestätigen-Button ---
     const confirmBtn = document.createElement('button');
     confirmBtn.className = 'btn btn-primary mt-1';
     confirmBtn.innerHTML = '<i class="bi bi-check-circle-fill me-1"></i> Aktion bestätigen';
     confirmBtn.onclick = () => {
         sendWitchAction(_witchHealToggled, _witchPoisonSelected);
-        _witchHealToggled   = false;
+        _witchHealToggled    = false;
         _witchPoisonSelected = null;
     };
     container.appendChild(confirmBtn);
@@ -444,14 +787,10 @@ function renderSeerActions(container) {
         msg.className = 'text-muted mb-0';
         msg.textContent = '🔮 Die Seherin schaut...';
         container.appendChild(msg);
-        if (amILeader()) {
-            container.appendChild(makeSkipBtn());
-        }
+        if (amILeader()) container.appendChild(makeSkipBtn());
         return;
     }
 
-    // --- Ich bin die Seherin ---
-    // Bereits inspiziertes Ergebnis zeigen (nach Klick, bevor Phase wechselt)
     if (seerRevealResult) {
         const result = document.createElement('div');
         result.className = 'alert alert-info py-2 mb-3';
@@ -468,8 +807,7 @@ function renderSeerActions(container) {
     const grid = document.createElement('div');
     grid.className = 'd-flex flex-wrap gap-2';
 
-    const targets = gameState.players.filter(p => p.alive && p.name !== currentPlayerName);
-    targets.forEach(p => {
+    gameState.players.filter(p => p.alive && p.name !== currentPlayerName).forEach(p => {
         const btn = document.createElement('button');
         btn.className = 'btn btn-outline-info vote-btn';
         btn.textContent = p.name;
@@ -487,8 +825,30 @@ function renderSeerActions(container) {
 function makeNextPhaseBtn() {
     const btn = document.createElement('button');
     btn.className = 'btn btn-primary mt-2';
-    btn.innerHTML = '<i class="bi bi-arrow-right-circle-fill me-1"></i> Nächste Phase';
     btn.onclick = nextPhaseServer;
+
+    // Tag-Phase nach Nacht: 15s Mindestwartezeit, Button erst dann freischalten
+    if (gameState.phase === 'day' && gameState.afterNight) {
+        btn.id = 'dayNextPhaseBtn';
+        const endsAt   = gameState.countdownEnd;
+        const duration = gameState.countdownDuration;
+        if (endsAt && duration) {
+            const buttonActiveAt = endsAt - (duration - 15) * 1000;
+            const isLocked = Date.now() < buttonActiveAt;
+            btn.disabled = isLocked;
+            if (isLocked) {
+                const lockSec = Math.ceil((buttonActiveAt - Date.now()) / 1000);
+                btn.innerHTML = `<i class="bi bi-lock-fill me-1"></i> Abstimmung in ${lockSec}s`;
+            } else {
+                btn.innerHTML = '<i class="bi bi-arrow-right-circle-fill me-1"></i> Abstimmung starten';
+            }
+        } else {
+            btn.innerHTML = '<i class="bi bi-arrow-right-circle-fill me-1"></i> Abstimmung starten';
+        }
+        return btn;
+    }
+
+    btn.innerHTML = '<i class="bi bi-arrow-right-circle-fill me-1"></i> Nächste Phase';
     return btn;
 }
 
@@ -523,10 +883,10 @@ function renderLobby() {
 
     document.getElementById('roomInfo').textContent = 'Raum: ' + currentRoomId;
 
-    const leaderCard    = document.getElementById('leaderSettingsCard');
-    const readOnlyCard  = document.getElementById('settingsReadOnly');
-    const startBtn      = document.getElementById('startGame');
-    const leaderHint    = document.getElementById('lobbyLeaderHint');
+    const leaderCard   = document.getElementById('leaderSettingsCard');
+    const readOnlyCard = document.getElementById('settingsReadOnly');
+    const startBtn     = document.getElementById('startGame');
+    const leaderHint   = document.getElementById('lobbyLeaderHint');
 
     if (amILeader()) {
         leaderCard.classList.remove('d-none');
@@ -534,24 +894,37 @@ function renderLobby() {
         startBtn.classList.remove('d-none');
         leaderHint.classList.add('d-none');
 
-        // Checkboxen synchronisieren (ohne Event-Loop)
-        const witchCheck = document.getElementById('roleWitch');
-        const seerCheck  = document.getElementById('roleSeer');
-        if (witchCheck) witchCheck.checked = !!(gameState.activeRoles?.witch);
-        if (seerCheck)  seerCheck.checked  = !!(gameState.activeRoles?.seer);
+        // Checkboxen synchronisieren
+        const witchCheck  = document.getElementById('roleWitch');
+        const seerCheck   = document.getElementById('roleSeer');
+        const hunterCheck = document.getElementById('roleHunter');
+        const amorCheck   = document.getElementById('roleAmor');
+        if (witchCheck)  witchCheck.checked  = !!(gameState.activeRoles?.witch);
+        if (seerCheck)   seerCheck.checked   = !!(gameState.activeRoles?.seer);
+        if (hunterCheck) hunterCheck.checked = !!(gameState.activeRoles?.hunter);
+        if (amorCheck)   amorCheck.checked   = !!(gameState.activeRoles?.amor);
+
+        // Voting-Duration Radio synchronisieren
+        const dur = gameState.votingDuration || 60;
+        const radios = document.querySelectorAll('input[name="votingDuration"]');
+        radios.forEach(r => { r.checked = (parseInt(r.value) === dur); });
     } else {
         leaderCard.classList.add('d-none');
         readOnlyCard.classList.remove('d-none');
         document.getElementById('werewolfCountDisplay').textContent = gameState.numWerewolves ?? 1;
 
-        // Sonderrollen anzeigen
         const rolesEl = document.getElementById('activeRolesDisplay');
         const active = [];
-        if (gameState.activeRoles?.witch) active.push('🧙 Hexe');
-        if (gameState.activeRoles?.seer)  active.push('🔮 Seherin');
+        if (gameState.activeRoles?.witch)   active.push('🧙 Hexe');
+        if (gameState.activeRoles?.seer)    active.push('🔮 Seherin');
+        if (gameState.activeRoles?.hunter)  active.push('🎯 Jäger');
+        if (gameState.activeRoles?.amor)    active.push('💘 Amor');
         rolesEl.textContent = active.length
             ? 'Sonderrollen: ' + active.join(', ')
             : 'Keine Sonderrollen aktiv';
+
+        const durEl = document.getElementById('votingDurationDisplay');
+        if (durEl) durEl.textContent = (gameState.votingDuration || 60) + ' s';
 
         startBtn.classList.add('d-none');
         leaderHint.classList.remove('d-none');
@@ -568,11 +941,10 @@ function updateWerewolfChatVisibility() {
     const sendBtn  = document.getElementById('werewolfChatSendBtn');
     const quickDiv = document.getElementById('werewolfQuickBtns');
 
-    const amIWolf   = myRole() === 'werewolf';
-    const isNight   = gameState.phase === 'night';
-    const meAlive   = gameState.players.find(p => p.name === currentPlayerName)?.alive ?? false;
+    const amIWolf = myRole() === 'werewolf';
+    const isNight = gameState.phase === 'night';
+    const meAlive = gameState.players.find(p => p.name === currentPlayerName)?.alive ?? false;
 
-    // Nur während Nacht und nur für Werwölfe anzeigen
     if (!amIWolf || !isNight) {
         section.classList.add('d-none');
         return;
@@ -580,23 +952,18 @@ function updateWerewolfChatVisibility() {
 
     section.classList.remove('d-none');
 
-    // Schreiben nur für lebende Wölfe
     const canWrite = meAlive;
-    input.disabled  = !canWrite;
+    input.disabled   = !canWrite;
     sendBtn.disabled = !canWrite;
     input.placeholder = canWrite ? 'Nachricht an Werwölfe...' : '💀 Nur lebende Werwölfe können schreiben';
 
-    // Schnellvorschläge: ein Button pro lebendem Nicht-Werwolf
     quickDiv.innerHTML = '';
     if (canWrite) {
-        const targets = gameState.players.filter(p => p.alive && p.role !== 'werewolf');
-        targets.forEach(p => {
+        gameState.players.filter(p => p.alive && p.role !== 'werewolf').forEach(p => {
             const btn = document.createElement('button');
             btn.className = 'btn btn-outline-danger wolf-quick-btn';
             btn.textContent = `Lass uns ${p.name} wählen`;
-            btn.onclick = () => {
-                sendWerewolfChat(`Lass uns ${p.name} wählen`);
-            };
+            btn.onclick = () => sendWerewolfChat(`Lass uns ${p.name} wählen`);
             quickDiv.appendChild(btn);
         });
     }
@@ -612,12 +979,15 @@ function appendWerewolfMessage(name, message) {
     box.scrollTop = box.scrollHeight;
 }
 
+
 // ---------------------------------------------------------------
 // Chat
 // ---------------------------------------------------------------
 function updateChatVisibility() {
     document.getElementById('chatSection').classList.remove('d-none');
-    const canChat = (gameState.phase === 'day' || gameState.phase === 'voting');
+    const canChat = (gameState.phase === 'day'  || gameState.phase === 'voting' ||
+                     gameState.phase === 'result' || gameState.phase === 'amor_notify' ||
+                     gameState.phase === 'game_over_results');
     const input   = document.getElementById('chatInput');
     const btn     = document.getElementById('chatSendBtn');
     input.disabled = !canChat;
@@ -660,6 +1030,8 @@ function roleDisplayName(role) {
         case 'witch':    return '🧙 Hexe';
         case 'seer':     return '🔮 Seherin';
         case 'villager': return '🧑 Dorfbewohner';
+        case 'hunter':   return '🎯 Jäger';
+        case 'amor':     return '💘 Amor';
         default:         return role || '?';
     }
 }
@@ -670,6 +1042,8 @@ function roleShortName(role) {
         case 'witch':    return 'Hexe';
         case 'seer':     return 'Seherin';
         case 'villager': return 'Dorfbewohner';
+        case 'hunter':   return 'Jäger';
+        case 'amor':     return 'Amor';
         default:         return role || '?';
     }
 }
@@ -680,6 +1054,8 @@ function roleBadgeClass(role) {
         case 'witch':    return 'role-witch';
         case 'seer':     return 'role-seer';
         case 'villager': return 'role-villager';
+        case 'hunter':   return 'role-hunter';
+        case 'amor':     return 'role-amor';
         default:         return 'role-unknown';
     }
 }
@@ -727,16 +1103,20 @@ document.getElementById('startGame').addEventListener('click', () => {
     startGame(num);
 });
 
-// Leiter-Einstellungen: sofort an alle senden wenn Leader etwas ändert
+// Leiter-Einstellungen: sofort senden wenn etwas geändert wird
 let _lobbySettingsTimer = null;
 function emitLobbySettings() {
     clearTimeout(_lobbySettingsTimer);
     _lobbySettingsTimer = setTimeout(() => {
-        const num = parseInt(document.getElementById('numWerewolves').value) || 1;
-        const witch = document.getElementById('roleWitch')?.checked || false;
-        const seer  = document.getElementById('roleSeer')?.checked  || false;
-        sendLobbySettings(num, { witch, seer });
-    }, 150); // kurzes Debounce
+        const num    = parseInt(document.getElementById('numWerewolves').value) || 1;
+        const witch  = document.getElementById('roleWitch')?.checked   || false;
+        const seer   = document.getElementById('roleSeer')?.checked    || false;
+        const hunter = document.getElementById('roleHunter')?.checked  || false;
+        const amor   = document.getElementById('roleAmor')?.checked    || false;
+        const durEl  = document.querySelector('input[name="votingDuration"]:checked');
+        const dur    = durEl ? parseInt(durEl.value) : 60;
+        sendLobbySettings(num, { witch, seer, hunter, amor }, dur);
+    }, 150);
 }
 
 document.getElementById('numWerewolves').addEventListener('input', () => {
@@ -747,6 +1127,17 @@ document.getElementById('roleWitch').addEventListener('change', () => {
 });
 document.getElementById('roleSeer').addEventListener('change', () => {
     if (amILeader()) emitLobbySettings();
+});
+document.getElementById('roleHunter').addEventListener('change', () => {
+    if (amILeader()) emitLobbySettings();
+});
+document.getElementById('roleAmor').addEventListener('change', () => {
+    if (amILeader()) emitLobbySettings();
+});
+document.querySelectorAll('input[name="votingDuration"]').forEach(radio => {
+    radio.addEventListener('change', () => {
+        if (amILeader()) emitLobbySettings();
+    });
 });
 
 // "In der Lobby bleiben"

@@ -6,6 +6,7 @@ let currentPlayerName = null;
 // Private Daten für Sonderrollen (nur für den jeweiligen Spieler sichtbar)
 let witchNightVictim = null;   // Opfer der Werwölfe (nur für Hexe)
 let seerRevealResult = null;   // Inspektionsergebnis (nur für Seherin)
+let loverPartnerName = null;   // Name des Partners (nur für Verliebte)
 let werewolfChatHistory = [];  // In-Memory Wolf-Chat für aktuelle Sitzung
 
 function initSocket() {
@@ -53,8 +54,29 @@ function initSocket() {
         if (data.gameState.phase === 'night') {
             witchNightVictim = null;
             seerRevealResult = null;
+            _myVoteTarget = null;
+        }
+        // Liebesdaten aufräumen wenn ich nicht im Liebespaar bin
+        if (!(data.gameState.loverNames || []).includes(currentPlayerName)) {
+            loverPartnerName = null;
+        }
+        // Eigene Abstimmung zurücksetzen beim Betreten der Voting-Phase (Tag)
+        if (data.gameState.phase === 'voting' && gameState.phase !== 'voting') {
+            _myVoteTarget = null;
+        }
+        // Eigene Abstimmung zurücksetzen wenn Voting-Phase endet
+        if (gameState.phase === 'voting' && data.gameState.phase !== 'voting') {
+            _myVoteTarget = null;
         }
         Object.assign(gameState, data.gameState);
+        updateUI();
+    });
+
+    // Countdown gestartet: Zähler-Anzeige aktivieren
+    socket.on('countdownStart', (data) => {
+        gameState.countdownEnd = data.endsAt;
+        gameState.countdownDuration = data.duration;
+        startCountdownDisplay();
         updateUI();
     });
 
@@ -76,6 +98,12 @@ function initSocket() {
     // Private Event: nur die Seherin empfängt dies
     socket.on('seerResult', (data) => {
         seerRevealResult = data; // { player, role }
+        updateUI();
+    });
+
+    // Privates Event: Liebespaar-Benachrichtigung
+    socket.on('loverInfo', (data) => {
+        loverPartnerName = data.partnerName;
         updateUI();
     });
 
@@ -124,9 +152,10 @@ function nextPhaseServer() {
     }
 }
 
-function sendVote(target) {
+// Simultane Abstimmung (ersetzt sendVote)
+function castVote(target) {
     if (socket && currentRoomId) {
-        socket.emit('playerVote', currentRoomId, target);
+        socket.emit('castVote', currentRoomId, target);
     }
 }
 
@@ -149,9 +178,9 @@ function sendWerewolfChat(message) {
     }
 }
 
-function sendLobbySettings(numWerewolves, activeRoles) {
+function sendLobbySettings(numWerewolves, activeRoles, votingDuration) {
     if (socket && currentRoomId) {
-        socket.emit('lobbySettings', currentRoomId, { numWerewolves, activeRoles });
+        socket.emit('lobbySettings', currentRoomId, { numWerewolves, activeRoles, votingDuration });
     }
 }
 
@@ -163,23 +192,39 @@ function leaveRoom() {
     currentPlayerName = null;
     witchNightVictim = null;
     seerRevealResult = null;
+    loverPartnerName = null;
     werewolfChatHistory = [];
+    _myVoteTarget = null;
     sessionStorage.removeItem('werwolf_roomId');
     sessionStorage.removeItem('werwolf_playerName');
     Object.assign(gameState, {
         phase: 'lobby', round: 1, gameOver: false, players: [],
         votes: {}, numWerewolves: 1, currentVoters: [], currentVoterIndex: 0,
-        werewolfVotes: {}, votingRound: 1, isWerewolfVoting: false,
+        werewolfVotes: {}, hasVotedNames: [], votingRound: 1, isWerewolfVoting: false,
         killedInNight: null, votingResult: null, isFirstDay: true,
         afterNight: false, announcement: '', leaderName: null,
-        activeRoles: { witch: false, seer: false },
+        activeRoles: { witch: false, seer: false, hunter: false, amor: false },
         witchHealUsed: false, witchPoisonUsed: false, nightVictim: null,
+        votingDuration: 60, countdownEnd: null, countdownDuration: 0,
+        loverNames: [], hunterRevengeUsed: false, afterHunterRevenge: null,
     });
 }
 
 function returnToLobby() {
     if (socket && currentRoomId) {
         socket.emit('returnToLobby', currentRoomId);
+    }
+}
+
+function sendAmorAction(player1, player2) {
+    if (socket && currentRoomId) {
+        socket.emit('amorAction', currentRoomId, player1, player2);
+    }
+}
+
+function sendHunterRevenge(target) {
+    if (socket && currentRoomId) {
+        socket.emit('hunterRevenge', currentRoomId, target);
     }
 }
 

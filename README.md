@@ -1,24 +1,66 @@
-# Werwolf – Verteiltes Multiplayer-System
+# Werwolf – Verteiltes Multiplayer-Spiel
 
-Dieses Projekt dient als Grundlage für ein verteiltes Multiplayer-Spiel (z. B. Werwolf).
-
-Aktuell enthält das Projekt eine minimale Express-Server-Konfiguration, die über Docker containerisiert ist und ein einfaches „Hello World“-Frontend ausliefert.
+Browserbasiertes Werwolf-Spiel mit Echtzeit-Kommunikation über WebSockets. Unterstützt Sonderrollen (Hexe, Seherin), einen Lobby-System mit Spielleiter, In-Game-Chat und geheimen Werwolf-Chat.
 
 ## Architektur
 
-Das System basiert auf einer Client-Server-Architektur:
+```
+Browser (HTML/CSS/JS + Bootstrap)
+        │  WebSocket (Socket.io)
+        ▼
+    Nginx (Reverse Proxy + Failover)
+    ├── Node.js Server 1  (primär)
+    ├── Node.js Server 2  (Failover)
+    └── Node.js Server 3  (Failover)
+        │
+        ├── MariaDB   (Spielzustand, Persistenz)
+        └── Redis     (Socket.io Adapter für Server-Synchronisation)
+```
 
-- Node.js (Express) Backend
-- Docker-basierte Container-Struktur
-- Optional erweiterbar um MariaDB
-- Frontend flexibel wählbar:
-    - Web-Frontend (JavaScript/HTML)
-    - Game-Client mit Godot Engine
+- **3 Node.js-Instanzen** hinter Nginx: fällt ein Server aus, übernimmt automatisch ein anderer
+- **MariaDB** persistiert Räume, Spieler und Abstimmungen — Spielstand überlebt Server-Neustarts
+- **Redis** synchronisiert WebSocket-Events zwischen den drei Instanzen
+- **Rollen:** Werwolf, Dorfbewohner, Hexe (Heil-/Gifttrank), Seherin (Rolleninspektion)
 
-Das Backend ist unabhängig vom Frontend konzipiert.  
-Sowohl ein Web-Client als auch ein Godot-Client können mit demselben Server kommunizieren.
+## Befehle
 
-## Projekt starten
+### Lokal entwickeln
 
 ```bash
-docker compose up --build
+# Starten (erstes Mal oder nach Code-Änderungen)
+docker compose up -d --build
+
+# Starten ohne Rebuild (schneller, wenn kein Code geändert)
+docker compose up -d
+
+# Status aller Container
+docker compose ps
+
+# Logs live verfolgen
+docker compose logs -f
+
+# Logs eines bestimmten Containers
+docker compose logs -f server
+
+# Stoppen (Daten bleiben erhalten)
+docker compose down
+
+# Stoppen + Datenbank zurücksetzen
+docker compose down -v 
+
+# Einzelnen Container neu starten
+docker compose restart server
+```
+
+Erreichbar unter: **http://localhost**  
+phpMyAdmin: **http://localhost:8085**
+
+
+
+### Online spielen ohne Server (Cloudflare Tunnel)
+
+```bash
+# Spiel lokal starten, dann Tunnel öffnen:
+cloudflared tunnel --url http://localhost:80
+# → gibt eine öffentliche https://....trycloudflare.com URL aus
+```
