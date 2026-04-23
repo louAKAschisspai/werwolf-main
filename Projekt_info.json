@@ -1,0 +1,6 @@
+{
+"thema": "Werwolf Spiel",
+"kurs": "WWI2024V",
+"teilnehmer": "Louis Uhrig (Matrikelnuzmmer: 2639923), Afrina Benta Anowar (Matrikelnummer: ), David Tok (Matrikelnummer: )",
+"kurzbeschreibung": "Werwolf ist ein browserbasiertes Echtzeit-Multiplayer-Spiel, das das bekannte Gesellschaftsspiel digital umsetzt. Anforderungen waren eine verteilte, ausfallsichere Serverarchitektur mit Echtzeit-Kommunikation sowie persistente Spielzustände über Server-Neustarts hinweg. Umgesetzt wurde das Projekt mit Node.js und Socket.IO für WebSocket-Kommunikation, MariaDB für Datenpersistenz und Redis als Pub/Sub-Adapter zur Synchronisierung mehrerer Server-Instanzen hinter einem Nginx-Loadbalancer. Besonders ist die vollständig serverseitige Spiellogik mit individuell gefiltertem Spielzustand pro Spieler, die sicherstellt, dass geheime Rollen und Abstimmungen nicht durch Client-Manipulation einsehbar sind."
+}

@@ -20,7 +20,7 @@ Browser (HTML/CSS/JS + Bootstrap)
 - **3 Node.js-Instanzen** hinter Nginx: fällt ein Server aus, übernimmt automatisch ein anderer
 - **MariaDB** persistiert Räume, Spieler und Abstimmungen — Spielstand überlebt Server-Neustarts
 - **Redis** synchronisiert WebSocket-Events zwischen den drei Instanzen
-- **Rollen:** Werwolf, Dorfbewohner, Hexe (Heil-/Gifttrank), Seherin (Rolleninspektion)
+- **Rollen:** Werwolf, Dorfbewohner, Hexe (Heil-/Gifttrank), Seherin (Rolleninspektion), Jäger (Vergeltungsschuss), Amor (Liebespaar)
 
 ## Befehle
 
@@ -60,7 +60,7 @@ phpMyAdmin: **http://localhost:8085**
 ### Online spielen ohne Server (Cloudflare Tunnel)
 
 ```bash
-# Spiel lokal starten, dann Tunnel öffnen:
+# Spiel lokal starten, dann Tunnel öffnen(benötigt vorherige installation mit: brew install cloudflare/cloudflare/cloudflared)
 cloudflared tunnel --url http://localhost:80
 # → gibt eine öffentliche https://....trycloudflare.com URL aus
 ```

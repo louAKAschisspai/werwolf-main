@@ -324,20 +324,16 @@ async function loadRoomsFromDB() {
                     gameOver:          !!row.game_over,
                     announcement:      row.announcement,
                     activeRoles: {
-                        witch: !!row.active_witch,
-                        seer:  !!row.active_seer,
+                        witch:  !!row.active_witch,
+                        seer:   !!row.active_seer,
+                        hunter: !!row.active_hunter,
+                        amor:   !!row.active_amor,
                     },
                     witchHealUsed:       !!row.witch_heal_used,
                     witchPoisonUsed:     !!row.witch_poison_used,
                     nightVictim:         row.night_victim ?? null,
                     votingDuration:      row.voting_duration ?? 60,
                     witchPoisonVictim:   row.witch_poison_victim ?? null,
-                    activeRoles: {
-                        witch:  !!row.active_witch,
-                        seer:   !!row.active_seer,
-                        hunter: !!row.active_hunter,
-                        amor:   !!row.active_amor,
-                    },
                     loverNames:          row.lover_names ? row.lover_names.split(',') : [],
                     hunterRevengeUsed:   !!row.hunter_revenge_used,
                     afterHunterRevenge:  row.after_hunter_revenge ?? null,
@@ -406,20 +402,16 @@ async function loadSingleRoomFromDB(roomId) {
                     gameOver:          !!row.game_over,
                     announcement:      row.announcement,
                     activeRoles: {
-                        witch: !!row.active_witch,
-                        seer:  !!row.active_seer,
+                        witch:  !!row.active_witch,
+                        seer:   !!row.active_seer,
+                        hunter: !!row.active_hunter,
+                        amor:   !!row.active_amor,
                     },
                     witchHealUsed:       !!row.witch_heal_used,
                     witchPoisonUsed:     !!row.witch_poison_used,
                     nightVictim:         row.night_victim ?? null,
                     votingDuration:      row.voting_duration ?? 60,
                     witchPoisonVictim:   row.witch_poison_victim ?? null,
-                    activeRoles: {
-                        witch:  !!row.active_witch,
-                        seer:   !!row.active_seer,
-                        hunter: !!row.active_hunter,
-                        amor:   !!row.active_amor,
-                    },
                     loverNames:          row.lover_names ? row.lover_names.split(',') : [],
                     hunterRevengeUsed:   !!row.hunter_revenge_used,
                     afterHunterRevenge:  row.after_hunter_revenge ?? null,
@@ -1537,7 +1529,7 @@ io.on('connection', (socket) => {
             }
         }
 
-        if (gs.gameOver) {
+        if (gs.gameOver || gs.phase === 'game_over_results') {
             broadcastGameState(roomId);
             saveRoomToDB(roomId);
             return;
@@ -1633,7 +1625,7 @@ io.on('connection', (socket) => {
     socket.on('chatMessage', (roomId, message) => {
         if (!rooms[roomId]) return;
         const phase = rooms[roomId].gameState.phase;
-        if (phase !== 'day' && phase !== 'voting') return;
+        if (phase !== 'day' && phase !== 'voting' && phase !== 'game_over_results') return;
 
         const player = rooms[roomId].gameState.players.find(p => p.socketId === socket.id);
         if (!player) return;
