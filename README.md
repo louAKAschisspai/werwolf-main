@@ -33,19 +33,11 @@ docker compose up -d --build
 # Starten ohne Rebuild (schneller, wenn kein Code geändert)
 docker compose up -d
 
-# Status aller Container
-docker compose ps
-
-# Logs live verfolgen
-docker compose logs -f
-
-# Logs eines bestimmten Containers
-docker compose logs -f server
 
 # Stoppen (Daten bleiben erhalten)
 docker compose down
 
-# Stoppen + Datenbank zurücksetzen
+# Stoppen + Datenbank zurücksetzen (Empfohlen nach dem Spielen)
 docker compose down -v 
 
 # Einzelnen Container neu starten
@@ -64,3 +56,5 @@ phpMyAdmin: **http://localhost:8085**
 cloudflared tunnel --url http://localhost:80
 # → gibt eine öffentliche https://....trycloudflare.com URL aus
 ```
+
+
